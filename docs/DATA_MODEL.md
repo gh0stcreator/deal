@@ -1,6 +1,6 @@
 # Data Model
 
-## Implemented tables
+## Implemented session tables
 ### `MediationSession`
 - `id`
 - `state`
@@ -17,14 +17,45 @@
 - `consentGrantedAt`
 - timestamps
 
-## Enumerations
-- `SessionState`
-- `ParticipantRole`
+## Implemented intake tables (Phase 2)
+### `ParticipantIntake`
+- `id`
+- `sessionId`
+- `participantId` (unique)
+- `state` (`NOT_STARTED` / `IN_PROGRESS` / `SUMMARY_PENDING_CONFIRMATION` / `COMPLETED`)
+- `currentField`
+- `normalizedPositionJson` (confirmed downstream source)
+- `generatedSummary`
+- `summaryVersion`
+- `version` (optimistic concurrency)
+- `completedAt`
+- timestamps
+
+### `IntakeFieldAnswer`
+- `intakeId`
+- `field`
+- `rawValue`
+- `normalizedValue`
+- `updatedAt`
+- unique key: (`intakeId`, `field`)
+
+### `IntakeRawMessage`
+- append-only raw participant messages
+- scoped by `intakeId` + `participantId`
+
+### `IntakeAssistantQuestion`
+- append-only asked questions
+- scoped by `intakeId` + `participantId`
+
+### `IntakeConfirmedSummary`
+- user-confirmed summary text
+- one-to-one with intake
+
+## Separation guarantees
+- Raw messages are persisted separately from normalized model.
+- Only confirmed normalized model + confirmed summary are allowed for downstream synthesis.
+- Repository queries for raw messages require both intake and participant identifiers.
 
 ## Deferred schema extensions
-- `InviteToken` history table (for multi-invite lifecycle)
-- `ConsentRecord` audit entries
-- `IntakeResponse` raw entries (private)
-- `IntakeNormalized` structured form
-- `ProposalRound` and `ProposalDecision`
-- `SessionEvent` audit log
+- Proposal rounds / proposal decisions
+- Event/audit stream for all domain commands

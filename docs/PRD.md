@@ -12,15 +12,26 @@ Help two parties resolve conflicts through private structured intake, neutral sy
 - Private by default.
 - Structured mediation over free-form chat.
 - Neutral framing and de-escalation.
+- Deterministic state machine controls progression.
 
-## MVP boundaries
-Included now:
+## Implemented now
 - Session creation
 - Invite/join
 - Explicit consent capture
+- Deterministic resumable private intake engine per participant
+- Mandatory summary confirmation gate before intake completion
 
-Deferred:
-- Intake
-- Synthesis
-- Proposal rounds
-- Outcome automation
+## Current intake fields
+- facts
+- interpretations
+- interests
+- constraints
+- boundaries
+- desired_outcome
+- acceptable_concessions
+- non_negotiables
+
+## Deferred
+- cross-party synthesis
+- proposal generation
+- negotiation loop and final outcomes automation
