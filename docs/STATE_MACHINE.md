@@ -69,7 +69,17 @@
 - when only Party B completed -> `SIDE_A_INTAKE`
 - when both completed -> `READY_FOR_SYNTHESIS`
 
+10. `run_synthesis`
+- from session: `READY_FOR_SYNTHESIS`
+- preconditions:
+  - both participant intakes are `COMPLETED`
+  - both confirmed summaries exist
+  - both confirmed normalized models include all required fields
+- output: versioned `MediationSummary`
+- control-flow note: synthesis orchestration is deterministic; LLM (or mapper) is used only for structured mapping, not branching
+
 ## Invariants
 - Invalid transitions return typed domain errors and do not mutate state.
 - Participant intake is isolated by `(sessionId, participantId)`.
 - Raw participant messages never leave participant scope in intake service APIs.
+- Synthesis service consumes only confirmed normalized models and never reads raw intake messages.

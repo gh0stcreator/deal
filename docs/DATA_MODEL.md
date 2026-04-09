@@ -56,6 +56,30 @@
 - Only confirmed normalized model + confirmed summary are allowed for downstream synthesis.
 - Repository queries for raw messages require both intake and participant identifiers.
 
+## Implemented synthesis tables (Phase 3)
+### `MediationSummary`
+- `id`
+- `caseId` (session id)
+- `version` (unique per case)
+- `sharedGoalsJson`
+- `overlappingInterestsJson`
+- `conflictingPointsJson`
+- `constraintsMatrixJson`
+- `nonNegotiablesConflictsJson`
+- `potentialAgreementZonesJson`
+- `riskAreasJson`
+- `neutralRepresentationJson`
+- `createdAt`
+
+## Synthesis input constraints (enforced in code)
+- allowed inputs:
+  - confirmed normalized position model (A)
+  - confirmed normalized position model (B)
+- forbidden inputs:
+  - raw messages
+  - assistant question history
+  - unconfirmed/partial intake data
+
 ## Deferred schema extensions
 - Proposal rounds / proposal decisions
 - Event/audit stream for all domain commands
