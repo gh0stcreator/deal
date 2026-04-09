@@ -12,9 +12,12 @@ import {
   IntakeField,
   IntakeFieldEntry,
   IntakeRawMessage,
+  IntakeState,
+  NormalizedPositionModel,
   ParticipantIntake,
   ParticipantIntake as ParticipantIntakeAggregate
 } from '../../domain/intake/types.js';
+import { ParticipantRole } from '../../domain/session/types.js';
 
 const fieldToPrisma: Record<IntakeField, PrismaIntakeField> = {
   facts: 'FACTS',
@@ -201,6 +204,36 @@ export class PrismaIntakeRepository implements IntakeRepository {
       field: prismaToField[row.field],
       content: row.content,
       createdAt: row.createdAt
+    }));
+  }
+
+  async findConfirmedNormalizedModels(
+    sessionId: string
+  ): Promise<
+    Array<{
+      participantId: string;
+      participantRole: ParticipantRole;
+      state: IntakeState;
+      normalizedPositionModel: NormalizedPositionModel | null;
+      confirmedSummary: string | null;
+      completedAt: Date | null;
+    }>
+  > {
+    const rows = await this.prisma.participantIntake.findMany({
+      where: { sessionId },
+      include: {
+        participant: true,
+        confirmedSummary: true
+      }
+    });
+
+    return rows.map((row) => ({
+      participantId: row.participantId,
+      participantRole: row.participant.role as ParticipantRole,
+      state: row.state as IntakeState,
+      normalizedPositionModel: (row.normalizedPositionJson ?? null) as NormalizedPositionModel | null,
+      confirmedSummary: row.confirmedSummary?.summaryText ?? null,
+      completedAt: row.completedAt
     }));
   }
 

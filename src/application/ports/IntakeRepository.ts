@@ -2,8 +2,11 @@ import {
   IntakeAssistantQuestion,
   IntakeMutationArtifacts,
   IntakeRawMessage,
+  IntakeState,
   ParticipantIntake
 } from '../../domain/intake/types.js';
+import { NormalizedPositionModel } from '../../domain/intake/types.js';
+import { ParticipantRole } from '../../domain/session/types.js';
 
 export interface IntakeSaveOptions {
   expectedVersion?: number;
@@ -18,4 +21,16 @@ export interface IntakeRepository {
   saveAssistantQuestion(question: IntakeAssistantQuestion): Promise<void>;
   findRawMessages(intakeId: string, participantId: string): Promise<IntakeRawMessage[]>;
   findAssistantQuestions(intakeId: string, participantId: string): Promise<IntakeAssistantQuestion[]>;
+  findConfirmedNormalizedModels(
+    sessionId: string
+  ): Promise<
+    Array<{
+      participantId: string;
+      participantRole: ParticipantRole;
+      state: IntakeState;
+      normalizedPositionModel: NormalizedPositionModel | null;
+      confirmedSummary: string | null;
+      completedAt: Date | null;
+    }>
+  >;
 }

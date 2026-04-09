@@ -1,10 +1,13 @@
 import { IntakeRepository, IntakeSaveOptions } from '../../application/ports/IntakeRepository.js';
 import { IntakeConflictError } from '../../domain/intake/errors.js';
 import {
+  IntakeState,
   IntakeAssistantQuestion,
+  NormalizedPositionModel,
   IntakeRawMessage,
   ParticipantIntake
 } from '../../domain/intake/types.js';
+import { ParticipantRole } from '../../domain/session/types.js';
 
 export class InMemoryIntakeRepository implements IntakeRepository {
   private readonly intakesById = new Map<string, ParticipantIntake>();
@@ -64,5 +67,29 @@ export class InMemoryIntakeRepository implements IntakeRepository {
     return this.assistantQuestions
       .filter((question) => question.intakeId === intakeId && question.participantId === participantId)
       .map((question) => structuredClone(question));
+  }
+
+  async findConfirmedNormalizedModels(
+    sessionId: string
+  ): Promise<
+    Array<{
+      participantId: string;
+      participantRole: ParticipantRole;
+      state: IntakeState;
+      normalizedPositionModel: NormalizedPositionModel | null;
+      confirmedSummary: string | null;
+      completedAt: Date | null;
+    }>
+  > {
+    return Array.from(this.intakesById.values())
+      .filter((intake) => intake.sessionId === sessionId)
+      .map((intake) => ({
+        participantId: intake.participantId,
+        participantRole: intake.participantRole,
+        state: intake.state,
+        normalizedPositionModel: structuredClone(intake.normalizedPositionModel),
+        confirmedSummary: intake.confirmedSummary,
+        completedAt: intake.completedAt
+      }));
   }
 }
