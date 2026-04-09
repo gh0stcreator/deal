@@ -1,0 +1,55 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum SessionState {
+  CREATED
+  INVITED
+  BOTH_JOINED
+  CONSENT_PENDING
+  CONSENTED
+  SIDE_A_INTAKE
+  SIDE_B_INTAKE
+  READY_FOR_SYNTHESIS
+  PROPOSAL_READY
+  NEGOTIATION
+  AGREEMENT
+  PARTIAL_AGREEMENT
+  DEADLOCK
+  ABANDONED
+}
+
+enum ParticipantRole {
+  PARTY_A
+  PARTY_B
+}
+
+model MediationSession {
+  id                String                @id @default(cuid())
+  state             SessionState
+  inviteTokenHash   String                @unique
+  inviteTokenExpiresAt DateTime
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+  participants      SessionParticipant[]
+}
+
+model SessionParticipant {
+  id                String          @id @default(cuid())
+  sessionId         String
+  role              ParticipantRole
+  telegramUserId    String
+  consentGrantedAt  DateTime?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  session           MediationSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, role])
+  @@unique([sessionId, telegramUserId])
+}
