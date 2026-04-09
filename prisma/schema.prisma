@@ -29,6 +29,24 @@ enum ParticipantRole {
   PARTY_B
 }
 
+enum ParticipantIntakeState {
+  NOT_STARTED
+  IN_PROGRESS
+  SUMMARY_PENDING_CONFIRMATION
+  COMPLETED
+}
+
+enum IntakeField {
+  FACTS
+  INTERPRETATIONS
+  INTERESTS
+  CONSTRAINTS
+  BOUNDARIES
+  DESIRED_OUTCOME
+  ACCEPTABLE_CONCESSIONS
+  NON_NEGOTIABLES
+}
+
 model MediationSession {
   id                String                @id @default(cuid())
   state             SessionState
@@ -49,7 +67,79 @@ model SessionParticipant {
   updatedAt         DateTime        @updatedAt
 
   session           MediationSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  intake            ParticipantIntake?
 
   @@unique([sessionId, role])
   @@unique([sessionId, telegramUserId])
+}
+
+model ParticipantIntake {
+  id                    String                  @id
+  sessionId             String
+  participantId         String                  @unique
+  state                 ParticipantIntakeState
+  currentField          IntakeField?
+  normalizedPositionJson Json?
+  generatedSummary      String?
+  summaryVersion        Int                     @default(0)
+  version               Int                     @default(1)
+  completedAt           DateTime?
+  createdAt             DateTime                @default(now())
+  updatedAt             DateTime                @updatedAt
+
+  participant           SessionParticipant      @relation(fields: [participantId], references: [id], onDelete: Cascade)
+  rawMessages           IntakeRawMessage[]
+  assistantQuestions    IntakeAssistantQuestion[]
+  fieldAnswers          IntakeFieldAnswer[]
+  confirmedSummary      IntakeConfirmedSummary?
+
+  @@index([sessionId])
+}
+
+model IntakeRawMessage {
+  id             String          @id
+  intakeId       String
+  participantId  String
+  field          IntakeField
+  content        String
+  createdAt      DateTime        @default(now())
+
+  intake         ParticipantIntake @relation(fields: [intakeId], references: [id], onDelete: Cascade)
+
+  @@index([intakeId, participantId])
+}
+
+model IntakeAssistantQuestion {
+  id             String          @id
+  intakeId       String
+  participantId  String
+  field          IntakeField
+  content        String
+  createdAt      DateTime        @default(now())
+
+  intake         ParticipantIntake @relation(fields: [intakeId], references: [id], onDelete: Cascade)
+
+  @@index([intakeId, participantId])
+}
+
+model IntakeFieldAnswer {
+  id             String          @id @default(cuid())
+  intakeId       String
+  field          IntakeField
+  rawValue       String
+  normalizedValue String
+  updatedAt      DateTime        @updatedAt
+
+  intake         ParticipantIntake @relation(fields: [intakeId], references: [id], onDelete: Cascade)
+
+  @@unique([intakeId, field])
+}
+
+model IntakeConfirmedSummary {
+  id             String          @id @default(cuid())
+  intakeId       String          @unique
+  summaryText    String
+  confirmedAt    DateTime        @default(now())
+
+  intake         ParticipantIntake @relation(fields: [intakeId], references: [id], onDelete: Cascade)
 }

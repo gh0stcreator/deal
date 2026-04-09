@@ -25,6 +25,7 @@ export const ParticipantRoles = {
 export type ParticipantRole = (typeof ParticipantRoles)[keyof typeof ParticipantRoles];
 
 export interface Participant {
+  id: string;
   role: ParticipantRole;
   telegramUserId: string;
   consentGrantedAt: Date | null;

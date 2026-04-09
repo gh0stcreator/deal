@@ -32,6 +32,7 @@ export const createSessionAggregate = (
   inviteTokenExpiresAt,
   participants: [
     {
+      id: `${id}:${ParticipantRoles.PARTY_A}`,
       role: ParticipantRoles.PARTY_A,
       telegramUserId: partyATelegramUserId,
       consentGrantedAt: null
@@ -59,6 +60,7 @@ export const joinSession = (
   const nextParticipants: Participant[] = [
     ...session.participants,
     {
+      id: `${session.id}:${ParticipantRoles.PARTY_B}`,
       role: ParticipantRoles.PARTY_B,
       telegramUserId: partyBTelegramUserId,
       consentGrantedAt: null

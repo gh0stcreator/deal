@@ -14,6 +14,7 @@ interface SessionRecord {
   createdAt: Date;
   updatedAt: Date;
   participants: Array<{
+    id: string;
     role: Participant['role'];
     telegramUserId: string;
     consentGrantedAt: Date | null;
@@ -29,6 +30,7 @@ const mapSession = (record: SessionRecord): MediationSession => ({
   updatedAt: record.updatedAt,
   participants: record.participants.map(
     (participant): Participant => ({
+      id: participant.id,
       role: participant.role,
       telegramUserId: participant.telegramUserId,
       consentGrantedAt: participant.consentGrantedAt
@@ -60,6 +62,7 @@ export class PrismaSessionRepository implements SessionRepository {
 
       await tx.sessionParticipant.createMany({
         data: session.participants.map((participant) => ({
+          id: participant.id,
           sessionId: session.id,
           role: participant.role,
           telegramUserId: participant.telegramUserId,
