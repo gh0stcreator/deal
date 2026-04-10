@@ -494,10 +494,20 @@ describe('transport adapters', () => {
     expect(replies[replies.length - 1]).toContain('Ты подтвердил участие');
 
     await sendTelegramCallback(bot, 63, 102, `consent:${sessionId}`);
-    expect(replies[replies.length - 1]).toContain('Готово. Вы оба подтвердили участие');
+    expect(replies.some((entry) => entry.includes('Готово. Вы оба подтвердили участие'))).toBe(true);
+    expect(replies[replies.length - 1]).toContain('С чем хотите договориться? Опиши коротко');
+
+    await sendTelegramText(bot, 64, 101, 'Хотим договориться о сроках и оплате');
+    await sendTelegramText(bot, 65, 102, 'Нужно договориться о формате и дедлайнах');
+
+    const partyAData = await intakeService.getPrivateIntakeData(sessionId!, '101');
+    const partyBData = await intakeService.getPrivateIntakeData(sessionId!, '102');
+    expect(partyAData.view.fields.facts.rawValue).toContain('сроках и оплате');
+    expect(partyBData.view.fields.facts.rawValue).toContain('формате и дедлайнах');
+    expect(partyAData.view.fields.facts.rawValue).not.toBe(partyBData.view.fields.facts.rawValue);
 
     const finalSession = await gateway.getSessionStatus(sessionId!, '101');
-    expect(finalSession.state).toBe(SessionStates.CONSENTED);
+    expect(finalSession.state).toBe(SessionStates.SIDE_A_INTAKE);
   });
 
   it('supports guided join via menu and plain token message', async () => {

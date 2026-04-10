@@ -162,6 +162,7 @@ export const buildTelegramBot = (
   const sleep =
     options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const pendingInput = new Map<string, PendingInputKind>();
+  const pendingProblemSession = new Map<string, string>();
   const lastSessionByUser = new Map<string, string>();
   const lastInviteByUser = new Map<string, { deepLink: string | null; token: string }>();
 
@@ -278,6 +279,76 @@ export const buildTelegramBot = (
     } catch {
       // no-op
     }
+  };
+
+  const sendDirectWithRetry = async (
+    chatId: string,
+    text: string,
+    metadata: { correlation_id: string; action_type: string },
+    extra?: { reply_markup?: InlineKeyboard }
+  ): Promise<boolean> => {
+    for (let attempt = 1; attempt <= maxSendAttempts; attempt += 1) {
+      try {
+        await bot.api.sendMessage(Number(chatId), text, extra);
+        logger.info(
+          {
+            correlation_id: metadata.correlation_id,
+            action_type: metadata.action_type,
+            attempt
+          },
+          'telegram.outbound.send.success'
+        );
+        return true;
+      } catch (error) {
+        const isTransient = isTransientTelegramSendError(error);
+        logger.warn(
+          {
+            correlation_id: metadata.correlation_id,
+            action_type: metadata.action_type,
+            attempt,
+            transient: isTransient,
+            error: error instanceof Error ? error.message : 'unknown'
+          },
+          'telegram.outbound.send.failed'
+        );
+
+        if (!isTransient || attempt >= maxSendAttempts) {
+          return false;
+        }
+        await sleep(baseBackoffMs * 2 ** (attempt - 1));
+      }
+    }
+    return false;
+  };
+
+  const askProblemDefinition = async (
+    participantTelegramUserId: string,
+    sessionId: string,
+    source: 'direct' | 'current',
+    ctx?: Context
+  ) => {
+    pendingProblemSession.set(participantTelegramUserId, sessionId);
+    const text = 'С чем хотите договориться? Опиши коротко';
+    if (source === 'current' && ctx) {
+      await sendReplyWithRetry(
+        ctx,
+        text,
+        {
+          correlation_id: makeCorrelationId(ctx),
+          action_type: 'problem_prompt'
+        }
+      );
+      return;
+    }
+
+    await sendDirectWithRetry(
+      participantTelegramUserId,
+      text,
+      {
+        correlation_id: `tg:consent:${sessionId}:${participantTelegramUserId}`,
+        action_type: 'problem_prompt'
+      }
+    );
   };
 
   const describeSessionForUser = async (
@@ -513,6 +584,17 @@ export const buildTelegramBot = (
         },
         { reply_markup: new InlineKeyboard().text('Посмотреть статус', `status:${sessionId}`) }
       );
+
+      if (result.state === SessionStates.CONSENTED) {
+        const session = await gateway.getSessionStatus(sessionId, telegramUserId);
+        for (const participant of session.participants) {
+          if (participant.telegramUserId === telegramUserId) {
+            await askProblemDefinition(participant.telegramUserId, sessionId, 'current', ctx);
+          } else {
+            await askProblemDefinition(participant.telegramUserId, sessionId, 'direct');
+          }
+        }
+      }
     } catch (error) {
       if (error instanceof DomainError && error.code === 'CONSENT_ALREADY_GRANTED') {
         const session = await gateway.getSessionStatus(sessionId, telegramUserId);
@@ -1153,6 +1235,71 @@ export const buildTelegramBot = (
     }
 
     const telegramUserId = userIdFromCtx(ctx);
+    const pendingProblemForSession = pendingProblemSession.get(telegramUserId);
+    if (pendingProblemForSession) {
+      const input = text.trim();
+      if (!input) {
+        await sendReplyWithRetry(
+          ctx,
+          'С чем хотите договориться? Опиши коротко',
+          {
+            correlation_id: makeCorrelationId(ctx),
+            action_type: 'problem_definition'
+          }
+        );
+        return;
+      }
+
+      try {
+        const result = await gateway.submitProblemDefinition(
+          {
+            correlation_id: makeCorrelationId(ctx),
+            channel: 'TELEGRAM',
+            idempotency_key: makeKey(ctx, 'problem_definition'),
+            action_type: 'problem_definition',
+            case_id: pendingProblemForSession,
+            participant_id: telegramUserId,
+            payload: { session_id: pendingProblemForSession, text: input }
+          },
+          pendingProblemForSession,
+          telegramUserId,
+          input
+        );
+
+        if (result.already_recorded) {
+          await sendReplyWithRetry(
+            ctx,
+            'Ты уже отправил описание. Ждём второго человека.',
+            {
+              correlation_id: makeCorrelationId(ctx),
+              action_type: 'problem_definition'
+            }
+          );
+        } else {
+          await sendReplyWithRetry(
+            ctx,
+            'Принял. Сохранил твоё описание.',
+            {
+              correlation_id: makeCorrelationId(ctx),
+              action_type: 'problem_definition'
+            }
+          );
+        }
+        pendingProblemSession.delete(telegramUserId);
+        return;
+      } catch (error) {
+        await sendReplyWithRetry(
+          ctx,
+          mapTelegramErrorText(error),
+          {
+            correlation_id: makeCorrelationId(ctx),
+            action_type: 'problem_definition'
+          }
+        );
+        return;
+      }
+    }
+
     const waiting = pendingInput.get(telegramUserId);
     if (!waiting) {
       return next();

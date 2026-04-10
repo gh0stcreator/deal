@@ -151,6 +151,33 @@ export class ProtocolGatewayService {
     });
   }
 
+  async submitProblemDefinition(
+    ctx: ActionExecutionContext,
+    sessionId: string,
+    telegramUserId: string,
+    description: string
+  ): Promise<{ recorded: boolean; already_recorded: boolean }> {
+    return this.executeIdempotent(ctx, async () => {
+      await this.requireParticipant(sessionId, telegramUserId);
+      const intake = await this.intakeService.startOrResume(sessionId, telegramUserId);
+
+      const existing = intake.fields.facts.rawValue?.trim();
+      if (existing) {
+        return { recorded: false, already_recorded: true };
+      }
+
+      await this.intakeService.submitFieldAnswer({
+        sessionId,
+        telegramUserId,
+        field: 'facts',
+        rawValue: description,
+        expectedVersion: intake.version
+      });
+
+      return { recorded: true, already_recorded: false };
+    });
+  }
+
   async generateProposals(
     ctx: ActionExecutionContext,
     sessionId: string,
