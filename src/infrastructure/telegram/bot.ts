@@ -516,7 +516,7 @@ export const buildTelegramBot = (
     pendingInput.delete(telegramUserId);
     await sendReplyWithRetry(
       ctx,
-      ['Привет. Я помогу провести медиацию между двумя сторонами.', 'Выберите действие:'].join('\n'),
+      ['Помогу вам спокойно договориться и зафиксировать решение.', 'Выберите действие:'].join('\n'),
       {
         correlation_id: makeCorrelationId(ctx),
         action_type: 'start'
