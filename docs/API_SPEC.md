@@ -38,6 +38,28 @@ Base URL: `http://localhost:3000`
 - body: `{ "telegramUserId": "string" }`
 - response: intake status view model
 
+## Synthesis Dogfood (debug/admin)
+### `GET /sessions/:sessionId/synthesis/review?telegramUserId=...`
+- response:
+```json
+{
+  "synthesis_version": 1,
+  "review_summary": "both_confirmed|one_confirmed_one_clarified|both_clarified|incomplete"
+}
+```
+
+### `GET /sessions/:sessionId/synthesis/review/export?telegramUserId=...`
+- response:
+```json
+{
+  "session_id": "string",
+  "synthesis_version": 1,
+  "review_summary": "both_confirmed|one_confirmed_one_clarified|both_clarified|incomplete",
+  "confirm_count": 0,
+  "clarify_count": 0
+}
+```
+
 ## Proposal
 ### `POST /sessions/:sessionId/proposals/generate`
 - body: `{ "telegramUserId": "string" }`

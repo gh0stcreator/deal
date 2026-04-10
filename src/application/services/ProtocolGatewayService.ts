@@ -90,6 +90,14 @@ export interface ProblemSynthesisReviewSummary {
   review_summary: 'both_confirmed' | 'one_confirmed_one_clarified' | 'both_clarified' | 'incomplete';
 }
 
+export interface ProblemSynthesisDogfoodExport {
+  session_id: string;
+  synthesis_version: number | null;
+  review_summary: ProblemSynthesisReviewSummary['review_summary'];
+  confirm_count: number;
+  clarify_count: number;
+}
+
 class NoopSynthesisReviewRepository implements SynthesisReviewRepository {
   async findLatestProblemSynthesis(): Promise<ProblemSynthesisSnapshot | null> {
     return null;
@@ -342,10 +350,45 @@ export class ProtocolGatewayService {
     sessionId: string,
     telegramUserId: string
   ): Promise<ProblemSynthesisReviewSummary> {
+    const details = await this.getProblemSynthesisReviewDetails(sessionId, telegramUserId);
+    return {
+      synthesis_version: details.synthesis_version,
+      review_summary: details.review_summary
+    };
+  }
+
+  async getProblemSynthesisDogfoodExport(
+    sessionId: string,
+    telegramUserId: string
+  ): Promise<ProblemSynthesisDogfoodExport> {
+    const details = await this.getProblemSynthesisReviewDetails(sessionId, telegramUserId);
+    return {
+      session_id: sessionId,
+      synthesis_version: details.synthesis_version,
+      review_summary: details.review_summary,
+      confirm_count: details.confirm_count,
+      clarify_count: details.clarify_count
+    };
+  }
+
+  private async getProblemSynthesisReviewDetails(
+    sessionId: string,
+    telegramUserId: string
+  ): Promise<
+    ProblemSynthesisReviewSummary & {
+      confirm_count: number;
+      clarify_count: number;
+    }
+  > {
     await this.requireParticipant(sessionId, telegramUserId);
     const latest = await this.synthesisReviewRepository.findLatestProblemSynthesis(sessionId);
     if (!latest) {
-      return { synthesis_version: null, review_summary: 'incomplete' };
+      return {
+        synthesis_version: null,
+        review_summary: 'incomplete',
+        confirm_count: 0,
+        clarify_count: 0
+      };
     }
 
     const signals = await this.synthesisReviewRepository.listReviewSignals(sessionId, latest.version);
@@ -363,7 +406,9 @@ export class ProtocolGatewayService {
 
     return {
       synthesis_version: latest.version,
-      review_summary: summary
+      review_summary: summary,
+      confirm_count: confirmed,
+      clarify_count: clarified
     };
   }
 

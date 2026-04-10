@@ -95,3 +95,4 @@ Predictable reset workflow (local/dev DB):
 - [`docs/VISIBILITY_MATRIX.md`](./docs/VISIBILITY_MATRIX.md)
 - [`docs/OPS_NOTES.md`](./docs/OPS_NOTES.md)
 - [`docs/LOCAL_RUNTIME_RUNBOOK.md`](./docs/LOCAL_RUNTIME_RUNBOOK.md)
+- [`docs/SYNTHESIS_DOGFOOD_RUNBOOK.md`](./docs/SYNTHESIS_DOGFOOD_RUNBOOK.md)

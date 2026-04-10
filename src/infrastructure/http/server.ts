@@ -584,6 +584,20 @@ export const buildHttpServer = (gateway: ProtocolGatewayService, options: HttpSe
     }
   });
 
+  app.get('/sessions/:sessionId/synthesis/review/export', async (request, reply) => {
+    try {
+      const params = z.object({ sessionId: z.string().min(1) }).parse(request.params);
+      const query = z.object({ telegramUserId: z.string().min(1) }).parse(request.query);
+      const summary = await gateway.getProblemSynthesisDogfoodExport(
+        params.sessionId,
+        query.telegramUserId
+      );
+      return reply.send(summary);
+    } catch (error) {
+      return sendHttpError(error, reply);
+    }
+  });
+
   app.get('/sessions/:sessionId/proposals', async (request, reply) => {
     try {
       const params = z.object({ sessionId: z.string().min(1) }).parse(request.params);

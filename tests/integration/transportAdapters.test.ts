@@ -938,6 +938,19 @@ describe('transport adapters', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json().review_summary).toBe('one_confirmed_one_clarified');
+
+    const exportResponse = await setup.app.inject({
+      method: 'GET',
+      url: `/sessions/${setup.sessionId}/synthesis/review/export?telegramUserId=101`
+    });
+    expect(exportResponse.statusCode).toBe(200);
+    expect(exportResponse.json()).toMatchObject({
+      session_id: setup.sessionId,
+      synthesis_version: expect.any(Number),
+      review_summary: 'one_confirmed_one_clarified',
+      confirm_count: 1,
+      clarify_count: 1
+    });
   });
 
   it('keeps protocol mutation single-shot for concurrent same idempotency key HTTP actions', async () => {
