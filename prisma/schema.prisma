@@ -91,6 +91,11 @@ enum ProtocolEventOutcome {
   ERROR
 }
 
+enum SynthesisReactionType {
+  CONFIRM
+  CLARIFY
+}
+
 model MediationSession {
   id                String                @id @default(cuid())
   state             SessionState
@@ -100,6 +105,8 @@ model MediationSession {
   updatedAt         DateTime              @updatedAt
   participants      SessionParticipant[]
   summaries         MediationSummary[]
+  problemSyntheses  ProblemSynthesisSnapshot[]
+  synthesisReviews  SynthesisReviewSignal[]
   proposalSets      ProposalSet[]
   negotiationRounds NegotiationRound[]
   protocolEvents    ProtocolEvent[]
@@ -116,9 +123,42 @@ model SessionParticipant {
 
   session           MediationSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   intake            ParticipantIntake?
+  synthesisReviews  SynthesisReviewSignal[]
 
   @@unique([sessionId, role])
   @@unique([sessionId, telegramUserId])
+}
+
+model ProblemSynthesisSnapshot {
+  id           String            @id
+  caseId       String
+  version      Int
+  focus        String
+  sharedPoints String
+  divergence   String
+  createdAt    DateTime          @default(now())
+
+  session      MediationSession  @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  reviews      SynthesisReviewSignal[]
+
+  @@unique([caseId, version])
+  @@index([caseId])
+}
+
+model SynthesisReviewSignal {
+  id                String                 @id
+  caseId            String
+  participantId     String
+  synthesisVersion  Int
+  reactionType      SynthesisReactionType
+  createdAt         DateTime               @default(now())
+
+  session           MediationSession       @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  participant       SessionParticipant     @relation(fields: [participantId], references: [id], onDelete: Cascade)
+  synthesisSnapshot ProblemSynthesisSnapshot @relation(fields: [caseId, synthesisVersion], references: [caseId, version], onDelete: Cascade)
+
+  @@unique([caseId, participantId, synthesisVersion])
+  @@index([caseId, synthesisVersion])
 }
 
 model ParticipantIntake {

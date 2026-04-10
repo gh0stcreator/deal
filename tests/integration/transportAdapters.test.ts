@@ -19,6 +19,7 @@ import { InMemoryNegotiationRoundRepository } from '../../src/infrastructure/rep
 import { InMemoryProposalSetRepository } from '../../src/infrastructure/repositories/InMemoryProposalSetRepository.js';
 import { InMemoryProtocolTrackingRepository } from '../../src/infrastructure/repositories/InMemoryProtocolTrackingRepository.js';
 import { InMemorySessionRepository } from '../../src/infrastructure/repositories/InMemorySessionRepository.js';
+import { InMemorySynthesisReviewRepository } from '../../src/infrastructure/repositories/InMemorySynthesisReviewRepository.js';
 import { buildTelegramBot } from '../../src/infrastructure/telegram/bot.js';
 import { InMemoryRateLimiter } from '../../src/infrastructure/transport/rateLimiter.js';
 
@@ -99,6 +100,7 @@ const setupTransport = async (options?: {
   const proposalSetRepo = new InMemoryProposalSetRepository();
   const negotiationRoundRepo = new InMemoryNegotiationRoundRepository();
   const trackingRepo = new InMemoryProtocolTrackingRepository();
+  const synthesisReviewRepo = new InMemorySynthesisReviewRepository();
 
   const mediationService = new MediationService(sessionRepo, clock, ids);
   const intakeService = new IntakeService(
@@ -142,7 +144,9 @@ const setupTransport = async (options?: {
     proposalSetRepo,
     trackingRepo,
     ids,
-    clock
+    clock,
+    undefined,
+    synthesisReviewRepo
   );
 
   const created = await mediationService.createSession('101');
@@ -399,6 +403,7 @@ describe('transport adapters', () => {
     const proposalSetRepo = new InMemoryProposalSetRepository();
     const negotiationRoundRepo = new InMemoryNegotiationRoundRepository();
     const trackingRepo = new InMemoryProtocolTrackingRepository();
+    const synthesisReviewRepo = new InMemorySynthesisReviewRepository();
 
     const mediationService = new MediationService(sessionRepo, clock, ids);
     const intakeService = new IntakeService(
@@ -442,7 +447,9 @@ describe('transport adapters', () => {
       proposalSetRepo,
       trackingRepo,
       ids,
-      clock
+      clock,
+      undefined,
+      synthesisReviewRepo
     );
 
     const bot = buildTelegramBot('test-token', gateway, {
@@ -534,6 +541,8 @@ describe('transport adapters', () => {
     expect(replies[replies.length - 1]).toContain('Что именно я понял не так?');
     await sendTelegramText(bot, 71, 101, 'Нужно добавить, что важен способ коммуникации');
     expect(replies[replies.length - 1]).toContain('Принял уточнение. Сохранил отдельно.');
+    await sendTelegramCallback(bot, 72, 102, `synthesis:ok:${sessionId}`);
+    expect(replies[replies.length - 1]).toContain('Спасибо. Зафиксировал.');
 
     const partyADataAfterClarification = await intakeService.getPrivateIntakeData(sessionId!, '101');
     const partyBDataAfterClarification = await intakeService.getPrivateIntakeData(sessionId!, '102');
@@ -547,6 +556,8 @@ describe('transport adapters', () => {
         entry.content.includes('[problem_synthesis_clarification]')
       )
     ).toBe(false);
+    const reviewSummary = await gateway.getProblemSynthesisReviewSummary(sessionId!, '101');
+    expect(reviewSummary.review_summary).toBe('one_confirmed_one_clarified');
 
     const finalSession = await gateway.getSessionStatus(sessionId!, '101');
     expect(finalSession.state).toBe(SessionStates.SIDE_A_INTAKE);
@@ -872,6 +883,61 @@ describe('transport adapters', () => {
 
     const view = await setup.gateway.getNegotiationStatus(setup.sessionId, '101');
     expect(view.current_round_number).toBe(1);
+  });
+
+  it('returns developer-readable synthesis review summary over HTTP', async () => {
+    const setup = await setupTransport();
+
+    await setup.gateway.buildProblemSynthesis(
+      {
+        correlation_id: 'corr:synth:1',
+        channel: 'HTTP',
+        idempotency_key: 'idemp:synth:1',
+        action_type: 'problem_synthesis',
+        case_id: setup.sessionId,
+        participant_id: '101',
+        payload: {}
+      },
+      setup.sessionId,
+      '101'
+    );
+
+    await setup.gateway.recordProblemSynthesisReaction(
+      {
+        correlation_id: 'corr:synth:2',
+        channel: 'HTTP',
+        idempotency_key: 'idemp:synth:2',
+        action_type: 'synthesis_confirm',
+        case_id: setup.sessionId,
+        participant_id: '101',
+        payload: { reaction: 'confirm' }
+      },
+      setup.sessionId,
+      '101',
+      'confirm'
+    );
+    await setup.gateway.recordProblemSynthesisReaction(
+      {
+        correlation_id: 'corr:synth:3',
+        channel: 'HTTP',
+        idempotency_key: 'idemp:synth:3',
+        action_type: 'synthesis_clarify',
+        case_id: setup.sessionId,
+        participant_id: '102',
+        payload: { reaction: 'clarify' }
+      },
+      setup.sessionId,
+      '102',
+      'clarify'
+    );
+
+    const response = await setup.app.inject({
+      method: 'GET',
+      url: `/sessions/${setup.sessionId}/synthesis/review?telegramUserId=101`
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().review_summary).toBe('one_confirmed_one_clarified');
   });
 
   it('keeps protocol mutation single-shot for concurrent same idempotency key HTTP actions', async () => {

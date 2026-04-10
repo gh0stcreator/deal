@@ -32,3 +32,30 @@ export interface MediationSummary {
   content: StructuredSynthesis;
   createdAt: Date;
 }
+
+export interface ProblemSynthesisSnapshot {
+  id: string;
+  caseId: string;
+  version: number;
+  focus: string;
+  sharedPoints: string;
+  divergence: string;
+  createdAt: Date;
+}
+
+export const SynthesisReactionTypes = {
+  CONFIRM: 'CONFIRM',
+  CLARIFY: 'CLARIFY'
+} as const;
+
+export type SynthesisReactionType =
+  (typeof SynthesisReactionTypes)[keyof typeof SynthesisReactionTypes];
+
+export interface SynthesisReviewSignal {
+  id: string;
+  caseId: string;
+  participantId: string;
+  synthesisVersion: number;
+  reactionType: SynthesisReactionType;
+  createdAt: Date;
+}

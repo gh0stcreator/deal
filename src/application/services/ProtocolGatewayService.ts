@@ -9,6 +9,7 @@ import { SynthesisService } from './SynthesisService.js';
 import { ProposalSetRepository } from '../ports/ProposalSetRepository.js';
 import { SessionRepository } from '../ports/SessionRepository.js';
 import { ProtocolTrackingRepository } from '../ports/ProtocolTrackingRepository.js';
+import { SynthesisReviewRepository } from '../ports/SynthesisReviewRepository.js';
 import {
   IdempotencyRecord,
   ProtocolEventOutcomes,
@@ -26,6 +27,11 @@ import {
 import { TransportAccessDeniedError } from '../../domain/protocol/errors.js';
 import { DomainError } from '../../domain/session/errors.js';
 import { AppLogger, createNoopLogger } from '../ports/AppLogger.js';
+import {
+  ProblemSynthesisSnapshot,
+  SynthesisReactionTypes,
+  SynthesisReactionType
+} from '../../domain/synthesis/types.js';
 
 const RETRY_WINDOW_MS = 20_000;
 
@@ -74,6 +80,30 @@ export interface ProblemSynthesisView {
   divergence: string;
 }
 
+export interface ProblemSynthesisEnvelope {
+  synthesis_version: number;
+  synthesis: ProblemSynthesisView;
+}
+
+export interface ProblemSynthesisReviewSummary {
+  synthesis_version: number | null;
+  review_summary: 'both_confirmed' | 'one_confirmed_one_clarified' | 'both_clarified' | 'incomplete';
+}
+
+class NoopSynthesisReviewRepository implements SynthesisReviewRepository {
+  async findLatestProblemSynthesis(): Promise<ProblemSynthesisSnapshot | null> {
+    return null;
+  }
+
+  async saveProblemSynthesis(): Promise<void> {}
+
+  async saveOrUpdateReviewSignal(): Promise<void> {}
+
+  async listReviewSignals(): Promise<never[]> {
+    return [];
+  }
+}
+
 export class ProtocolGatewayService {
   /**
    * Phase-specific alias:
@@ -93,7 +123,8 @@ export class ProtocolGatewayService {
     private readonly trackingRepository: ProtocolTrackingRepository,
     private readonly idGenerator: IdGenerator,
     private readonly clock: Clock,
-    private readonly logger: AppLogger = createNoopLogger()
+    private readonly logger: AppLogger = createNoopLogger(),
+    private readonly synthesisReviewRepository: SynthesisReviewRepository = new NoopSynthesisReviewRepository()
   ) {}
 
   async createSession(
@@ -217,7 +248,7 @@ export class ProtocolGatewayService {
     ctx: ActionExecutionContext,
     sessionId: string,
     telegramUserId: string
-  ): Promise<ProblemSynthesisView> {
+  ): Promise<ProblemSynthesisEnvelope> {
     return this.executeIdempotent(ctx, async () => {
       const session = await this.requireParticipant(sessionId, telegramUserId);
       if (session.participants.length !== 2) {
@@ -239,7 +270,23 @@ export class ProtocolGatewayService {
         statements.push(statement);
       }
 
-      return buildNeutralProblemSynthesis(statements[0], statements[1]);
+      const synthesis = buildNeutralProblemSynthesis(statements[0], statements[1]);
+      const latest = await this.synthesisReviewRepository.findLatestProblemSynthesis(sessionId);
+      const snapshot: ProblemSynthesisSnapshot = {
+        id: this.idGenerator.nextId(),
+        caseId: sessionId,
+        version: latest ? latest.version + 1 : 1,
+        focus: synthesis.focus,
+        sharedPoints: synthesis.shared_points,
+        divergence: synthesis.divergence,
+        createdAt: this.clock.now()
+      };
+      await this.synthesisReviewRepository.saveProblemSynthesis(snapshot);
+
+      return {
+        synthesis_version: snapshot.version,
+        synthesis
+      };
     });
   }
 
@@ -258,6 +305,66 @@ export class ProtocolGatewayService {
       );
       return { saved: true };
     });
+  }
+
+  async recordProblemSynthesisReaction(
+    ctx: ActionExecutionContext,
+    sessionId: string,
+    telegramUserId: string,
+    reactionType: 'confirm' | 'clarify'
+  ): Promise<{ synthesis_version: number; reaction_type: 'confirm' | 'clarify' }> {
+    return this.executeIdempotent(ctx, async () => {
+      const { participant } = await this.requireParticipantRecord(sessionId, telegramUserId);
+      const latest = await this.synthesisReviewRepository.findLatestProblemSynthesis(sessionId);
+      if (!latest) {
+        throw new IntakeValidationError('No synthesis available to review yet.');
+      }
+
+      const mappedReaction: SynthesisReactionType =
+        reactionType === 'confirm' ? SynthesisReactionTypes.CONFIRM : SynthesisReactionTypes.CLARIFY;
+      await this.synthesisReviewRepository.saveOrUpdateReviewSignal({
+        id: this.idGenerator.nextId(),
+        caseId: sessionId,
+        participantId: participant.id,
+        synthesisVersion: latest.version,
+        reactionType: mappedReaction,
+        createdAt: this.clock.now()
+      });
+
+      return {
+        synthesis_version: latest.version,
+        reaction_type: reactionType
+      };
+    });
+  }
+
+  async getProblemSynthesisReviewSummary(
+    sessionId: string,
+    telegramUserId: string
+  ): Promise<ProblemSynthesisReviewSummary> {
+    await this.requireParticipant(sessionId, telegramUserId);
+    const latest = await this.synthesisReviewRepository.findLatestProblemSynthesis(sessionId);
+    if (!latest) {
+      return { synthesis_version: null, review_summary: 'incomplete' };
+    }
+
+    const signals = await this.synthesisReviewRepository.listReviewSignals(sessionId, latest.version);
+    const confirmed = signals.filter((signal) => signal.reactionType === SynthesisReactionTypes.CONFIRM).length;
+    const clarified = signals.filter((signal) => signal.reactionType === SynthesisReactionTypes.CLARIFY).length;
+
+    let summary: ProblemSynthesisReviewSummary['review_summary'] = 'incomplete';
+    if (confirmed >= 2) {
+      summary = 'both_confirmed';
+    } else if (clarified >= 2) {
+      summary = 'both_clarified';
+    } else if (confirmed >= 1 && clarified >= 1) {
+      summary = 'one_confirmed_one_clarified';
+    }
+
+    return {
+      synthesis_version: latest.version,
+      review_summary: summary
+    };
   }
 
   async generateProposals(
@@ -389,19 +496,24 @@ export class ProtocolGatewayService {
   }
 
   private async requireParticipant(sessionId: string, telegramUserId: string) {
+    const { session } = await this.requireParticipantRecord(sessionId, telegramUserId);
+    return session;
+  }
+
+  private async requireParticipantRecord(sessionId: string, telegramUserId: string) {
     const session = await this.sessionRepository.findById(sessionId);
     if (!session) {
       throw new SessionNotFoundError();
     }
 
-    const isParticipant = session.participants.some(
-      (participant) => participant.telegramUserId === telegramUserId
+    const participant = session.participants.find(
+      (entry) => entry.telegramUserId === telegramUserId
     );
-    if (!isParticipant) {
+    if (!participant) {
       throw new TransportAccessDeniedError();
     }
 
-    return session;
+    return { session, participant };
   }
 
   private async executeIdempotent<T>(

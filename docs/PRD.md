@@ -30,6 +30,8 @@ Help two participants resolve conflict through private structured intake, neutra
   - built only from both confirmed participant problem statements
   - shared neutral 3-block synthesis text for both sides
   - private clarification capture (`Нет, нужно уточнить`) without auto re-synthesis
+  - persisted synthesis review signals (`CONFIRM` / `CLARIFY`) for dogfood validation
+  - debug synthesis review summary (`both_confirmed`, `one_confirmed_one_clarified`, `both_clarified`)
 
 ## Structured data fields
 ### Intake fields

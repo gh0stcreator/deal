@@ -1266,7 +1266,7 @@ export const buildTelegramBot = (
     );
 
     if (bothConfirmed) {
-      const synthesis = await gateway.buildProblemSynthesis(
+      const synthesisEnvelope = await gateway.buildProblemSynthesis(
         {
           correlation_id: makeCorrelationId(ctx),
           channel: 'TELEGRAM',
@@ -1279,7 +1279,7 @@ export const buildTelegramBot = (
         sessionId,
         telegramUserId
       );
-      const synthesisText = renderProblemSynthesis(synthesis);
+      const synthesisText = renderProblemSynthesis(synthesisEnvelope.synthesis);
       problemSynthesisSent.add(sessionId);
       for (const participant of session.participants) {
         if (participant.telegramUserId === telegramUserId) {
@@ -1319,29 +1319,81 @@ export const buildTelegramBot = (
 
   bot.callbackQuery(/^synthesis:ok:([A-Za-z0-9_-]{3,})$/, async (ctx) => {
     await safeAnswerCallback(ctx);
-    await sendReplyWithRetry(
-      ctx,
-      'Спасибо. Зафиксировал.',
-      {
-        correlation_id: makeCorrelationId(ctx),
-        action_type: 'synthesis_ack'
-      }
-    );
+    try {
+      const sessionId = ctx.match[1];
+      const telegramUserId = userIdFromCtx(ctx);
+      await gateway.recordProblemSynthesisReaction(
+        {
+          correlation_id: makeCorrelationId(ctx),
+          channel: 'TELEGRAM',
+          idempotency_key: makeKey(ctx, 'synthesis_confirm'),
+          action_type: 'synthesis_confirm',
+          case_id: sessionId,
+          participant_id: telegramUserId,
+          payload: { session_id: sessionId, reaction: 'confirm' }
+        },
+        sessionId,
+        telegramUserId,
+        'confirm'
+      );
+      await sendReplyWithRetry(
+        ctx,
+        'Спасибо. Зафиксировал.',
+        {
+          correlation_id: makeCorrelationId(ctx),
+          action_type: 'synthesis_ack'
+        }
+      );
+    } catch (error) {
+      await sendReplyWithRetry(
+        ctx,
+        mapTelegramErrorText(error),
+        {
+          correlation_id: makeCorrelationId(ctx),
+          action_type: 'synthesis_ack'
+        }
+      );
+    }
   });
 
   bot.callbackQuery(/^synthesis:clarify:([A-Za-z0-9_-]{3,})$/, async (ctx) => {
     await safeAnswerCallback(ctx);
-    const sessionId = ctx.match[1];
-    const telegramUserId = userIdFromCtx(ctx);
-    pendingSynthesisClarificationSession.set(telegramUserId, sessionId);
-    await sendReplyWithRetry(
-      ctx,
-      'Что именно я понял не так?',
-      {
-        correlation_id: makeCorrelationId(ctx),
-        action_type: 'synthesis_clarify_prompt'
-      }
-    );
+    try {
+      const sessionId = ctx.match[1];
+      const telegramUserId = userIdFromCtx(ctx);
+      await gateway.recordProblemSynthesisReaction(
+        {
+          correlation_id: makeCorrelationId(ctx),
+          channel: 'TELEGRAM',
+          idempotency_key: makeKey(ctx, 'synthesis_clarify_reaction'),
+          action_type: 'synthesis_clarify_reaction',
+          case_id: sessionId,
+          participant_id: telegramUserId,
+          payload: { session_id: sessionId, reaction: 'clarify' }
+        },
+        sessionId,
+        telegramUserId,
+        'clarify'
+      );
+      pendingSynthesisClarificationSession.set(telegramUserId, sessionId);
+      await sendReplyWithRetry(
+        ctx,
+        'Что именно я понял не так?',
+        {
+          correlation_id: makeCorrelationId(ctx),
+          action_type: 'synthesis_clarify_prompt'
+        }
+      );
+    } catch (error) {
+      await sendReplyWithRetry(
+        ctx,
+        mapTelegramErrorText(error),
+        {
+          correlation_id: makeCorrelationId(ctx),
+          action_type: 'synthesis_clarify_prompt'
+        }
+      );
+    }
   });
 
   bot.callbackQuery('invite:copy', async (ctx) => {

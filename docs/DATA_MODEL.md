@@ -68,6 +68,24 @@
 - `neutralRepresentationJson`
 - `createdAt`
 
+### `ProblemSynthesisSnapshot` (dogfood step before proposals)
+- `id`
+- `caseId`
+- `version` (unique per case)
+- `focus`
+- `sharedPoints`
+- `divergence`
+- `createdAt`
+
+### `SynthesisReviewSignal`
+- `id`
+- `caseId`
+- `participantId`
+- `synthesisVersion`
+- `reactionType` (`CONFIRM`, `CLARIFY`)
+- `createdAt`
+- unique (`caseId`, `participantId`, `synthesisVersion`)
+
 ## Proposal/negotiation entities
 ### `ProposalSet`
 - `id`
