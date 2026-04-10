@@ -506,11 +506,11 @@ describe('transport adapters', () => {
     await sendTelegramText(bot, 61, 101, 'Сроки и оплата за проект');
     const creatorReply = replies[replies.length - 1];
     expect(creatorReply).toContain('Договорённость создана');
-    expect(creatorReply).toContain('Открой приглашение и отправь его второму человеку.');
+    expect(creatorReply).toContain('Перешли это сообщение второму человеку');
     expect(creatorReply).toContain('user хочет обсудить с вами:');
     expect(creatorReply).toContain('«Сроки и оплата за проект»');
+    expect(creatorReply).toContain('https://t.me/ladno_bot?start=join_');
     const creatorActionsBeforeJoin = JSON.stringify(sentPayloads[sentPayloads.length - 1].reply_markup);
-    expect(creatorActionsBeforeJoin).toContain('invite:send');
     expect(creatorActionsBeforeJoin).toContain('invite:details');
     expect(creatorActionsBeforeJoin).toContain('status:');
     expect(creatorActionsBeforeJoin).not.toContain('consent:');

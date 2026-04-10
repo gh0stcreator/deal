@@ -577,22 +577,19 @@ export const buildTelegramBot = (
 
       const keyboard = new InlineKeyboard();
       keyboard
-        .text('Показать приглашение', 'invite:send')
-        .row()
         .text('Если ссылка не сработает', 'invite:details')
         .row()
         .text('Посмотреть статус', `status:${result.session_id}`);
 
       const text = [
         'Договорённость создана.',
-        'Открой приглашение и отправь его второму человеку.',
         '',
         `${initiatorName} хочет обсудить с вами:`,
         `«${problemTopic}»`,
         '',
-        'Я помогу вам спокойно договориться.',
+        'Перешли это сообщение второму человеку 👇',
         '',
-        'Дальше: отправь приглашение и дождись второго человека.'
+        deepLink ?? 'Не получилось создать ссылку в этом чате.'
       ].join('\n');
 
       await sendReplyWithRetry(
