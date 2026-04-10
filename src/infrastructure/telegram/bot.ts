@@ -304,7 +304,7 @@ export const buildTelegramBot = (
         statusLines.push('Дальше: дождись второго человека.');
       } else if (consentCount === 2) {
         statusLines.push('Обе стороны подтвердили участие.');
-        statusLines.push('Можно двигаться дальше.');
+        statusLines.push('Дальше: переходите к обсуждению решения.');
       } else if (self?.consentGrantedAt) {
         statusLines.push('Ты подтвердил участие.');
         statusLines.push('Ждём второго человека.');
@@ -372,7 +372,6 @@ export const buildTelegramBot = (
         ctx,
         [
           'Ты подключился к договорённости.',
-          'Теперь вам обоим нужно подтвердить участие.',
           'Дальше: нажми «Подтвердить участие».'
         ].join('\n'),
         {
@@ -437,7 +436,7 @@ export const buildTelegramBot = (
         'Договорённость создана.',
         'Отправь приглашение второму человеку — после этого вы оба сможете подтвердить участие.',
         deepLink
-          ? ['Ссылка для приглашения:', deepLink].join('\n')
+          ? ['Ссылка для приглашения:', deepLink, 'Скопируй ссылку и отправь второму человеку.'].join('\n')
           : 'Не получилось создать ссылку в этом чате.',
         ['Если ссылка не сработает, отправь этот токен:', result.invite_token].join('\n'),
         'Дальше: дождись второго человека и нажми «Подтвердить участие».'
@@ -486,7 +485,7 @@ export const buildTelegramBot = (
       lastSessionByUser.set(telegramUserId, sessionId);
       const feedback =
         result.state === SessionStates.CONSENTED
-          ? ['Готово. Вы оба подтвердили участие.', 'Можно двигаться дальше.'].join('\n')
+          ? ['Готово. Вы оба подтвердили участие.', 'Дальше: переходите к обсуждению решения.'].join('\n')
           : ['Ты подтвердил участие.', 'Ждём второго человека.'].join('\n');
 
       await sendReplyWithRetry(
@@ -1094,7 +1093,7 @@ export const buildTelegramBot = (
       ctx,
       [
         invite.deepLink
-          ? ['Ссылка для приглашения:', invite.deepLink].join('\n')
+          ? ['Ссылка для приглашения:', invite.deepLink, 'Скопируй ссылку и отправь второму человеку.'].join('\n')
           : 'Не получилось создать ссылку в этом чате.',
         'Если ссылка не сработает, отправь этот токен:',
         invite.token
