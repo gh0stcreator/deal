@@ -77,6 +77,7 @@ Base URL: `http://localhost:3000`
 ## Idempotency
 - Optional header: `x-idempotency-key` for POST endpoints.
 - Duplicate actions return stable no-op responses.
+- Optional header: `x-correlation-id` for request tracing (echoed in response header).
 
 ## Error shape
 ```json
@@ -91,4 +92,5 @@ Base URL: `http://localhost:3000`
 - `404`: entity/token/session/variant not found
 - `409`: invalid state transition / stale conflict / duplicate action / invite issues
 - `422`: missing required data / validation errors
+- `429`: rate limit exceeded
 - `500`: unexpected internal failure

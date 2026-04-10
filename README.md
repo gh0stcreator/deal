@@ -1,11 +1,11 @@
 # Ladno / Deal
 
-Telegram-first AI mediation backend for deterministic two-party conflict resolution.
+Telegram-first backend for deterministic two-party mediation.
 
-## Product scope
-- Not a generic chatbot.
-- Structured protocol: session -> consent -> private intake -> synthesis -> proposal variants -> negotiation rounds -> terminal outcome.
-- Strict privacy boundary: no raw private participant messages are exposed cross-party.
+## What this is
+- Structured protocol, not a generic chatbot.
+- State-machine driven: session -> consent -> private intake -> synthesis -> proposals -> negotiation.
+- Strict privacy boundaries: no cross-party raw intake message exposure.
 
 ## Stack
 - TypeScript / Node.js
@@ -13,45 +13,58 @@ Telegram-first AI mediation backend for deterministic two-party conflict resolut
 - grammY (Telegram adapter)
 - PostgreSQL + Prisma
 - pnpm
-- Vitest (unit + integration)
+- Vitest
 
-## Implemented (through Phase 6)
-- Explicit session and participant state machines.
-- Session create/invite/join flow.
-- Dual explicit consent flow.
-- Deterministic private intake workflow with summary confirmation gate and reopen support.
-- Privacy-preserving synthesis from confirmed normalized models only.
-- Deterministic proposal generation (exactly 3 variants).
-- Deterministic negotiation protocol (accept/reject/select/suggest-edit, versioned rounds/sets, terminal outcomes).
-- Thin transport wiring for Telegram + HTTP over the same application services.
-- Transport idempotency and protocol audit events.
-
-## Not implemented yet
-- Reminder/notification strategy.
-- Rich conversational UX.
-- Advanced analytics/dashboard.
+## Implemented (through Phase 7)
+- Deterministic domain protocol for session, intake, synthesis, proposal, negotiation.
+- Thin Telegram/HTTP transports wired 1:1 to application services.
+- Transport idempotency + audit trail (`IdempotencyRecord`, `ProtocolEvent`).
+- Transport hardening:
+  - action rate limiting (join brute-force + action spam + invalid command spam)
+  - outbound Telegram retry/backoff for transient delivery failures
+  - correlation ID propagation (`x-correlation-id` / Telegram update correlation)
+  - structured protocol and transport logging without private raw text
+- Concurrency and replay-focused integration tests.
+- Real Postgres integration suite (enabled when `TEST_DATABASE_URL` is set).
 
 ## Local setup
 1. Copy env:
    - `cp .env.example .env`
 2. Install dependencies:
    - `corepack pnpm install`
-3. Start DB:
+3. Start Postgres:
    - `docker compose up -d postgres`
 4. Generate Prisma client:
    - `corepack pnpm prisma generate`
-5. Run migrations:
-   - `corepack pnpm prisma migrate deploy`
+5. Apply migrations:
+   - `corepack pnpm prisma:deploy`
 6. Start app:
    - `corepack pnpm dev`
 
-## Commands
-- Run tests: `corepack pnpm test`
-- Build: `corepack pnpm build`
-- Prisma Studio: `corepack pnpm prisma studio`
+## Migration verification workflow
+Fresh bootstrap verification:
+1. `docker compose up -d postgres`
+2. `corepack pnpm prisma:deploy`
+3. `corepack pnpm prisma:status`
 
-## Transport usage
-### Telegram commands
+Predictable reset workflow (local/dev DB):
+1. `corepack pnpm prisma migrate reset --force --skip-generate --skip-seed`
+2. `corepack pnpm prisma:deploy`
+
+## Testing
+- Full suite:
+  - `corepack pnpm test`
+- Build check:
+  - `corepack pnpm build`
+- Postgres runtime suite:
+  - `TEST_DATABASE_URL=postgresql://deal:deal@localhost:5432/deal?schema=public corepack pnpm test:postgres`
+
+## Runtime protections (current thresholds)
+- Join/invite brute-force: `8 requests / 60s` per participant.
+- General protocol actions: `30 requests / 60s` per participant/session.
+- Invalid Telegram command spam: `10 commands / 60s` per participant.
+
+## Telegram commands
 - `/start`
 - `/create_session`
 - `/join_session <invite_token>`
@@ -65,13 +78,11 @@ Telegram-first AI mediation backend for deterministic two-party conflict resolut
 - `/reject_proposal <session_id> <BALANCED|A_LEANING|B_LEANING>`
 - `/suggest_edit <session_id> <variant> <clause_id> <operation> [proposed_value]`
 
-### HTTP
-- `GET /health`
-- Session/intake/proposal/negotiation endpoints documented in [`docs/API_SPEC.md`](./docs/API_SPEC.md).
-
-## Documentation
+## Docs
 - [`docs/PRD.md`](./docs/PRD.md)
 - [`docs/STATE_MACHINE.md`](./docs/STATE_MACHINE.md)
 - [`docs/DATA_MODEL.md`](./docs/DATA_MODEL.md)
 - [`docs/TRANSPORT_SPEC.md`](./docs/TRANSPORT_SPEC.md)
 - [`docs/API_SPEC.md`](./docs/API_SPEC.md)
+- [`docs/VISIBILITY_MATRIX.md`](./docs/VISIBILITY_MATRIX.md)
+- [`docs/OPS_NOTES.md`](./docs/OPS_NOTES.md)

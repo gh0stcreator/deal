@@ -2,10 +2,13 @@ import { createHash } from 'node:crypto';
 import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 import { z } from 'zod';
+import { Clock, SystemClock } from '../../application/ports/Clock.js';
+import { AppLogger, createNoopLogger } from '../../application/ports/AppLogger.js';
 import { ProtocolGatewayService } from '../../application/services/ProtocolGatewayService.js';
 import { ProposalVariantTypes } from '../../domain/proposal/types.js';
 import { SuggestEditOperations } from '../../domain/negotiation/types.js';
 import { sendHttpError } from '../transport/errorMapping.js';
+import { InMemoryRateLimiter } from '../transport/rateLimiter.js';
 import {
   mapIntakeStatusView,
   mapNegotiationRoundStatusView,
@@ -29,38 +32,107 @@ const editOperationEnum = z.enum([
 
 const withIdempotency = (
   request: { headers: Record<string, unknown>; id: string },
+  correlationId: string,
   userId: string,
   actionType: string,
   payload: unknown
 ): string => {
   const headerValue = request.headers['x-idempotency-key'];
   if (typeof headerValue === 'string' && headerValue.trim()) {
-    return `http:${headerValue.trim()}`;
+    return `http:${correlationId}:${headerValue.trim()}`;
   }
 
   const hash = createHash('sha256')
     .update(JSON.stringify({ actionType, userId, payload }))
     .digest('hex')
     .slice(0, 16);
-  return `http:${request.id}:${hash}`;
+  return `http:${correlationId}:${hash}`;
 };
 
 const userSchema = z.object({ telegramUserId: z.string().min(1) });
 
-export const buildHttpServer = (gateway: ProtocolGatewayService) => {
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const GENERAL_ACTION_LIMIT = 30;
+const JOIN_ATTEMPT_LIMIT = 8;
+
+export interface HttpServerOptions {
+  logger?: AppLogger;
+  rate_limiter?: InMemoryRateLimiter;
+  clock?: Clock;
+}
+
+export const buildHttpServer = (gateway: ProtocolGatewayService, options: HttpServerOptions = {}) => {
+  const logger = options.logger ?? createNoopLogger();
+  const rateLimiter = options.rate_limiter ?? new InMemoryRateLimiter(options.clock ?? new SystemClock());
   const app = Fastify({ logger: false });
 
   app.register(sensible);
+  app.addHook('onRequest', async (request, reply) => {
+    const headerValue = request.headers['x-correlation-id'];
+    const correlationId =
+      typeof headerValue === 'string' && headerValue.trim()
+        ? headerValue.trim()
+        : `http:${request.id}`;
+    request.headers['x-correlation-id'] = correlationId;
+    reply.header('x-correlation-id', correlationId);
+  });
+
+  const correlationIdFor = (request: { headers: Record<string, unknown>; id: string }): string => {
+    const headerValue = request.headers['x-correlation-id'];
+    if (typeof headerValue === 'string' && headerValue.trim()) {
+      return headerValue.trim();
+    }
+    return `http:${request.id}`;
+  };
+
+  const enforceRateLimit = (
+    request: { headers: Record<string, unknown>; id: string },
+    reply: { code: (statusCode: number) => { send: (payload: unknown) => unknown } },
+    key: string,
+    limit: number,
+    actionType: string
+  ): boolean => {
+    const decision = rateLimiter.consume(key, limit, RATE_LIMIT_WINDOW_MS);
+    if (decision.allowed) {
+      return true;
+    }
+
+    logger.warn(
+      {
+        correlation_id: correlationIdFor(request),
+        action_type: actionType,
+        retry_after_seconds: decision.retry_after_seconds
+      },
+      'http.action.rate_limited'
+    );
+    reply.code(429).send({
+      code: 'RATE_LIMITED',
+      message: `Too many requests. Retry in ~${decision.retry_after_seconds}s.`
+    });
+    return false;
+  };
 
   app.get('/health', async () => ({ status: 'ok' }));
 
   app.post('/sessions/create', async (request, reply) => {
     try {
       const body = userSchema.parse(request.body);
+      if (
+        !enforceRateLimit(
+          request,
+          reply,
+          `http:action:${body.telegramUserId}`,
+          GENERAL_ACTION_LIMIT,
+          'create_session'
+        )
+      ) {
+        return reply;
+      }
       const result = await gateway.createSession(
         {
+          correlation_id: correlationIdFor(request),
           channel: 'HTTP',
-          idempotency_key: withIdempotency(request, body.telegramUserId, 'create_session', body),
+          idempotency_key: withIdempotency(request, correlationIdFor(request), body.telegramUserId, 'create_session', body),
           action_type: 'create_session',
           case_id: null,
           participant_id: body.telegramUserId,
@@ -80,11 +152,23 @@ export const buildHttpServer = (gateway: ProtocolGatewayService) => {
       const body = z
         .object({ telegramUserId: z.string().min(1), inviteToken: z.string().min(1) })
         .parse(request.body);
+      if (
+        !enforceRateLimit(
+          request,
+          reply,
+          `http:join:${body.telegramUserId}`,
+          JOIN_ATTEMPT_LIMIT,
+          'join_session'
+        )
+      ) {
+        return reply;
+      }
 
       const result = await gateway.joinSession(
         {
+          correlation_id: correlationIdFor(request),
           channel: 'HTTP',
-          idempotency_key: withIdempotency(request, body.telegramUserId, 'join_session', body),
+          idempotency_key: withIdempotency(request, correlationIdFor(request), body.telegramUserId, 'join_session', body),
           action_type: 'join_session',
           case_id: null,
           participant_id: body.telegramUserId,
@@ -104,11 +188,23 @@ export const buildHttpServer = (gateway: ProtocolGatewayService) => {
     try {
       const params = z.object({ sessionId: z.string().min(1) }).parse(request.params);
       const body = userSchema.parse(request.body);
+      if (
+        !enforceRateLimit(
+          request,
+          reply,
+          `http:action:${body.telegramUserId}:${params.sessionId}`,
+          GENERAL_ACTION_LIMIT,
+          'give_consent'
+        )
+      ) {
+        return reply;
+      }
 
       const result = await gateway.giveConsent(
         {
+          correlation_id: correlationIdFor(request),
           channel: 'HTTP',
-          idempotency_key: withIdempotency(request, body.telegramUserId, 'give_consent', {
+          idempotency_key: withIdempotency(request, correlationIdFor(request), body.telegramUserId, 'give_consent', {
             params,
             body
           }),
@@ -131,11 +227,23 @@ export const buildHttpServer = (gateway: ProtocolGatewayService) => {
     try {
       const params = z.object({ sessionId: z.string().min(1) }).parse(request.params);
       const body = userSchema.parse(request.body);
+      if (
+        !enforceRateLimit(
+          request,
+          reply,
+          `http:action:${body.telegramUserId}:${params.sessionId}`,
+          GENERAL_ACTION_LIMIT,
+          'resume_intake'
+        )
+      ) {
+        return reply;
+      }
 
       const view = await gateway.resumeIntake(
         {
+          correlation_id: correlationIdFor(request),
           channel: 'HTTP',
-          idempotency_key: withIdempotency(request, body.telegramUserId, 'resume_intake', {
+          idempotency_key: withIdempotency(request, correlationIdFor(request), body.telegramUserId, 'resume_intake', {
             params,
             body
           }),
@@ -158,11 +266,23 @@ export const buildHttpServer = (gateway: ProtocolGatewayService) => {
     try {
       const params = z.object({ sessionId: z.string().min(1) }).parse(request.params);
       const body = userSchema.parse(request.body);
+      if (
+        !enforceRateLimit(
+          request,
+          reply,
+          `http:action:${body.telegramUserId}:${params.sessionId}`,
+          GENERAL_ACTION_LIMIT,
+          'confirm_summary'
+        )
+      ) {
+        return reply;
+      }
 
       const view = await gateway.confirmSummary(
         {
+          correlation_id: correlationIdFor(request),
           channel: 'HTTP',
-          idempotency_key: withIdempotency(request, body.telegramUserId, 'confirm_summary', {
+          idempotency_key: withIdempotency(request, correlationIdFor(request), body.telegramUserId, 'confirm_summary', {
             params,
             body
           }),
@@ -185,11 +305,23 @@ export const buildHttpServer = (gateway: ProtocolGatewayService) => {
     try {
       const params = z.object({ sessionId: z.string().min(1) }).parse(request.params);
       const body = userSchema.parse(request.body);
+      if (
+        !enforceRateLimit(
+          request,
+          reply,
+          `http:action:${body.telegramUserId}:${params.sessionId}`,
+          GENERAL_ACTION_LIMIT,
+          'reopen_intake'
+        )
+      ) {
+        return reply;
+      }
 
       const view = await gateway.reopenIntake(
         {
+          correlation_id: correlationIdFor(request),
           channel: 'HTTP',
-          idempotency_key: withIdempotency(request, body.telegramUserId, 'reopen_intake', {
+          idempotency_key: withIdempotency(request, correlationIdFor(request), body.telegramUserId, 'reopen_intake', {
             params,
             body
           }),
@@ -212,11 +344,23 @@ export const buildHttpServer = (gateway: ProtocolGatewayService) => {
     try {
       const params = z.object({ sessionId: z.string().min(1) }).parse(request.params);
       const body = userSchema.parse(request.body);
+      if (
+        !enforceRateLimit(
+          request,
+          reply,
+          `http:action:${body.telegramUserId}:${params.sessionId}`,
+          GENERAL_ACTION_LIMIT,
+          'generate_proposals'
+        )
+      ) {
+        return reply;
+      }
 
       const set = await gateway.generateProposals(
         {
+          correlation_id: correlationIdFor(request),
           channel: 'HTTP',
-          idempotency_key: withIdempotency(request, body.telegramUserId, 'generate_proposals', {
+          idempotency_key: withIdempotency(request, correlationIdFor(request), body.telegramUserId, 'generate_proposals', {
             params,
             body
           }),
@@ -241,11 +385,23 @@ export const buildHttpServer = (gateway: ProtocolGatewayService) => {
       const body = z
         .object({ telegramUserId: z.string().min(1), variantType: variantEnum })
         .parse(request.body);
+      if (
+        !enforceRateLimit(
+          request,
+          reply,
+          `http:action:${body.telegramUserId}:${params.sessionId}`,
+          GENERAL_ACTION_LIMIT,
+          'select_preferred'
+        )
+      ) {
+        return reply;
+      }
 
       const result = await gateway.selectPreferred(
         {
+          correlation_id: correlationIdFor(request),
           channel: 'HTTP',
-          idempotency_key: withIdempotency(request, body.telegramUserId, 'select_preferred', {
+          idempotency_key: withIdempotency(request, correlationIdFor(request), body.telegramUserId, 'select_preferred', {
             params,
             body
           }),
@@ -271,11 +427,23 @@ export const buildHttpServer = (gateway: ProtocolGatewayService) => {
       const body = z
         .object({ telegramUserId: z.string().min(1), variantType: variantEnum })
         .parse(request.body);
+      if (
+        !enforceRateLimit(
+          request,
+          reply,
+          `http:action:${body.telegramUserId}:${params.sessionId}`,
+          GENERAL_ACTION_LIMIT,
+          'accept_proposal'
+        )
+      ) {
+        return reply;
+      }
 
       const result = await gateway.acceptProposal(
         {
+          correlation_id: correlationIdFor(request),
           channel: 'HTTP',
-          idempotency_key: withIdempotency(request, body.telegramUserId, 'accept_proposal', {
+          idempotency_key: withIdempotency(request, correlationIdFor(request), body.telegramUserId, 'accept_proposal', {
             params,
             body
           }),
@@ -301,11 +469,23 @@ export const buildHttpServer = (gateway: ProtocolGatewayService) => {
       const body = z
         .object({ telegramUserId: z.string().min(1), variantType: variantEnum })
         .parse(request.body);
+      if (
+        !enforceRateLimit(
+          request,
+          reply,
+          `http:action:${body.telegramUserId}:${params.sessionId}`,
+          GENERAL_ACTION_LIMIT,
+          'reject_proposal'
+        )
+      ) {
+        return reply;
+      }
 
       const result = await gateway.rejectProposal(
         {
+          correlation_id: correlationIdFor(request),
           channel: 'HTTP',
-          idempotency_key: withIdempotency(request, body.telegramUserId, 'reject_proposal', {
+          idempotency_key: withIdempotency(request, correlationIdFor(request), body.telegramUserId, 'reject_proposal', {
             params,
             body
           }),
@@ -337,11 +517,23 @@ export const buildHttpServer = (gateway: ProtocolGatewayService) => {
           proposedValue: z.string().nullable().optional()
         })
         .parse(request.body);
+      if (
+        !enforceRateLimit(
+          request,
+          reply,
+          `http:action:${body.telegramUserId}:${params.sessionId}`,
+          GENERAL_ACTION_LIMIT,
+          'suggest_edit'
+        )
+      ) {
+        return reply;
+      }
 
       const result = await gateway.suggestEdit(
         {
+          correlation_id: correlationIdFor(request),
           channel: 'HTTP',
-          idempotency_key: withIdempotency(request, body.telegramUserId, 'suggest_edit', {
+          idempotency_key: withIdempotency(request, correlationIdFor(request), body.telegramUserId, 'suggest_edit', {
             params,
             body
           }),

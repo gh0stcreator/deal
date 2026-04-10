@@ -20,6 +20,7 @@ import { InMemoryProposalSetRepository } from '../../src/infrastructure/reposito
 import { InMemoryProtocolTrackingRepository } from '../../src/infrastructure/repositories/InMemoryProtocolTrackingRepository.js';
 import { InMemorySessionRepository } from '../../src/infrastructure/repositories/InMemorySessionRepository.js';
 import { buildTelegramBot } from '../../src/infrastructure/telegram/bot.js';
+import { InMemoryRateLimiter } from '../../src/infrastructure/transport/rateLimiter.js';
 
 class MutableClock implements Clock {
   constructor(private value: Date) {}
@@ -82,7 +83,13 @@ const completeIntake = async (
   });
 };
 
-const setupTransport = async () => {
+const setupTransport = async (options?: {
+  sendMessageBehavior?: (input: {
+    method: string;
+    payload: unknown;
+    attempt: number;
+  }) => { failWith?: Error } | void;
+}) => {
   const clock = new MutableClock(new Date('2026-01-12T00:00:00.000Z'));
   const ids = new SequentialIdGenerator();
 
@@ -147,7 +154,13 @@ const setupTransport = async () => {
   await synthesisService.synthesizeCase(joined.id);
   await proposalService.generateLatest(joined.id);
 
-  const bot = buildTelegramBot('test-token', gateway);
+  const sharedLimiter = new InMemoryRateLimiter(clock);
+  const bot = buildTelegramBot('test-token', gateway, {
+    rate_limiter: sharedLimiter,
+    max_send_attempts: 3,
+    base_backoff_ms: 1,
+    sleep: async () => undefined
+  });
   (bot as Bot).botInfo = {
     id: 1,
     is_bot: true,
@@ -159,8 +172,19 @@ const setupTransport = async () => {
   };
 
   const replies: string[] = [];
+  let sendAttempt = 0;
   bot.api.config.use(async (prev, method, payload, signal) => {
     if (method === 'sendMessage') {
+      sendAttempt += 1;
+      const behavior = options?.sendMessageBehavior?.({
+        method,
+        payload,
+        attempt: sendAttempt
+      });
+      if (behavior?.failWith) {
+        throw behavior.failWith;
+      }
+
       const text = (payload as { text?: string }).text ?? '';
       replies.push(text);
       return {
@@ -177,7 +201,10 @@ const setupTransport = async () => {
     return prev(method, payload, signal);
   });
 
-  const app = buildHttpServer(gateway);
+  const app = buildHttpServer(gateway, {
+    rate_limiter: sharedLimiter,
+    clock
+  });
 
   return {
     sessionId: joined.id,
@@ -188,8 +215,74 @@ const setupTransport = async () => {
     app,
     bot,
     replies,
-    negotiationService
+    negotiationService,
+    getSendAttemptCount: () => sendAttempt
   };
+};
+
+const setupConsentPendingTransport = async () => {
+  const clock = new MutableClock(new Date('2026-01-12T00:00:00.000Z'));
+  const ids = new SequentialIdGenerator();
+  const sessionRepo = new InMemorySessionRepository();
+  const intakeRepo = new InMemoryIntakeRepository();
+  const summaryRepo = new InMemoryMediationSummaryRepository();
+  const proposalSetRepo = new InMemoryProposalSetRepository();
+  const negotiationRoundRepo = new InMemoryNegotiationRoundRepository();
+  const trackingRepo = new InMemoryProtocolTrackingRepository();
+
+  const mediationService = new MediationService(sessionRepo, clock, ids);
+  const intakeService = new IntakeService(
+    sessionRepo,
+    intakeRepo,
+    new DeterministicIntakeNormalizer(),
+    ids,
+    clock
+  );
+  const synthesisService = new SynthesisService(
+    sessionRepo,
+    intakeRepo,
+    summaryRepo,
+    new DeterministicSynthesisMapper(),
+    ids,
+    clock
+  );
+  const proposalService = new ProposalGenerationService(
+    sessionRepo,
+    summaryRepo,
+    proposalSetRepo,
+    new DeterministicProposalMapper(),
+    ids,
+    clock
+  );
+  const negotiationService = new NegotiationService(
+    sessionRepo,
+    proposalSetRepo,
+    negotiationRoundRepo,
+    ids,
+    clock
+  );
+
+  const gateway = new ProtocolGatewayService(
+    mediationService,
+    intakeService,
+    synthesisService,
+    proposalService,
+    negotiationService,
+    sessionRepo,
+    proposalSetRepo,
+    trackingRepo,
+    ids,
+    clock
+  );
+
+  const created = await mediationService.createSession('101');
+  const joined = await mediationService.joinSessionByInviteToken(created.inviteToken, '102');
+  const app = buildHttpServer(gateway, {
+    rate_limiter: new InMemoryRateLimiter(clock),
+    clock
+  });
+
+  return { sessionId: joined.id, app, gateway };
 };
 
 const sendTelegramCommand = async (
@@ -438,5 +531,187 @@ describe('transport adapters', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json().outcome).toBe(SessionStates.ABANDONED);
+  });
+
+  it('handles concurrent Telegram duplicate delivery safely', async () => {
+    const setup = await setupTransport();
+
+    await Promise.all([
+      sendTelegramCommand(setup.bot, 900, 101, `/select_preferred ${setup.sessionId} BALANCED`),
+      sendTelegramCommand(setup.bot, 900, 101, `/select_preferred ${setup.sessionId} BALANCED`)
+    ]);
+
+    const view = await setup.gateway.getNegotiationStatus(setup.sessionId, '101');
+    expect(view.current_round_number).toBe(1);
+  });
+
+  it('keeps protocol mutation single-shot for concurrent same idempotency key HTTP actions', async () => {
+    const setup = await setupTransport();
+
+    const [a, b] = await Promise.all([
+      setup.app.inject({
+        method: 'POST',
+        url: `/sessions/${setup.sessionId}/negotiation/select-preferred`,
+        headers: { 'x-idempotency-key': 'same-key' },
+        payload: { telegramUserId: '101', variantType: 'BALANCED' }
+      }),
+      setup.app.inject({
+        method: 'POST',
+        url: `/sessions/${setup.sessionId}/negotiation/select-preferred`,
+        headers: { 'x-idempotency-key': 'same-key' },
+        payload: { telegramUserId: '101', variantType: 'BALANCED' }
+      })
+    ]);
+
+    expect([a.statusCode, b.statusCode].sort()).toEqual([200, 200]);
+
+    const events = await setup.trackingRepo.listProtocolEvents(setup.sessionId);
+    const selected = events.filter((event) => event.action_type === 'select_preferred');
+    expect(selected.some((event) => event.outcome === 'ACCEPTED')).toBe(true);
+    expect(selected.some((event) => event.outcome === 'NO_OP')).toBe(true);
+  });
+
+  it('recovers when telegram outbound delivery fails after protocol success', async () => {
+    let failOutbound = true;
+    const setup = await setupTransport({
+      sendMessageBehavior: () => (failOutbound ? { failWith: new Error('transient send error') } : undefined)
+    });
+
+    await sendTelegramCommand(setup.bot, 950, 101, `/select_preferred ${setup.sessionId} BALANCED`);
+    const afterFailedDelivery = await setup.gateway.getNegotiationStatus(setup.sessionId, '101');
+    expect(afterFailedDelivery.current_round_number).toBe(1);
+
+    failOutbound = false;
+    await sendTelegramCommand(setup.bot, 950, 101, `/select_preferred ${setup.sessionId} BALANCED`);
+    const afterReplay = await setup.gateway.getNegotiationStatus(setup.sessionId, '101');
+    expect(afterReplay.current_round_number).toBe(1);
+    expect(setup.getSendAttemptCount()).toBeGreaterThan(1);
+  });
+
+  it('rate-limits repeated invalid join attempts over HTTP', async () => {
+    const setup = await setupTransport();
+    let rateLimitedSeen = false;
+
+    for (let i = 0; i < 12; i += 1) {
+      const response = await setup.app.inject({
+        method: 'POST',
+        url: '/sessions/join',
+        payload: { telegramUserId: '999', inviteToken: `invalid-token-${i}` }
+      });
+      if (response.statusCode === 429) {
+        rateLimitedSeen = true;
+        break;
+      }
+    }
+
+    expect(rateLimitedSeen).toBe(true);
+  });
+
+  it('rate-limits repeated invalid commands over Telegram', async () => {
+    const setup = await setupTransport();
+    for (let i = 0; i < 12; i += 1) {
+      await sendTelegramCommand(setup.bot, 1000 + i, 101, '/unknowncmd');
+    }
+    expect(setup.replies[setup.replies.length - 1].toLowerCase()).toContain('rate limit exceeded');
+  });
+
+  it('applies correlation ids to HTTP responses and persisted action keys', async () => {
+    const setup = await setupTransport();
+    const response = await setup.app.inject({
+      method: 'POST',
+      url: `/sessions/${setup.sessionId}/negotiation/select-preferred`,
+      headers: {
+        'x-correlation-id': 'corr-42',
+        'x-idempotency-key': 'idemp-42'
+      },
+      payload: { telegramUserId: '101', variantType: 'BALANCED' }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['x-correlation-id']).toBe('corr-42');
+    const events = await setup.trackingRepo.listProtocolEvents(setup.sessionId);
+    const target = events.find((event) => event.action_type === 'select_preferred');
+    expect(target?.idempotency_key).toContain('corr-42');
+  });
+
+  it('returns stale/conflict response when same participant submits concurrent negotiation edits', async () => {
+    const setup = await setupTransport();
+    const proposalView = await setup.app.inject({
+      method: 'GET',
+      url: `/sessions/${setup.sessionId}/proposals?telegramUserId=101&variantType=BALANCED`
+    });
+    expect(proposalView.statusCode).toBe(200);
+    const clauseId = proposalView.json().clauses[0].clause_id as string;
+
+    const [a, b] = await Promise.all([
+      setup.app.inject({
+        method: 'POST',
+        url: `/sessions/${setup.sessionId}/negotiation/suggest-edit`,
+        headers: { 'x-idempotency-key': 'edit-a' },
+        payload: {
+          telegramUserId: '101',
+          variantType: 'BALANCED',
+          clauseId,
+          operation: 'MODIFY_CLAUSE_TEXT',
+          proposedValue: 'change A'
+        }
+      }),
+      setup.app.inject({
+        method: 'POST',
+        url: `/sessions/${setup.sessionId}/negotiation/suggest-edit`,
+        headers: { 'x-idempotency-key': 'edit-b' },
+        payload: {
+          telegramUserId: '101',
+          variantType: 'BALANCED',
+          clauseId,
+          operation: 'MODIFY_CLAUSE_TEXT',
+          proposedValue: 'change B'
+        }
+      })
+    ]);
+
+    expect([a.statusCode, b.statusCode].sort()).toEqual([200, 409]);
+  });
+
+  it('finalizes one negotiation round when participants submit simultaneously', async () => {
+    const setup = await setupTransport();
+    const [a, b] = await Promise.all([
+      setup.app.inject({
+        method: 'POST',
+        url: `/sessions/${setup.sessionId}/negotiation/accept`,
+        payload: { telegramUserId: '101', variantType: 'BALANCED' }
+      }),
+      setup.app.inject({
+        method: 'POST',
+        url: `/sessions/${setup.sessionId}/negotiation/accept`,
+        payload: { telegramUserId: '102', variantType: 'BALANCED' }
+      })
+    ]);
+    expect(a.statusCode).toBe(200);
+    expect(b.statusCode).toBe(200);
+
+    const view = await setup.gateway.getNegotiationStatus(setup.sessionId, '101');
+    expect(view.session_state).toBe('AGREEMENT_REACHED');
+  });
+
+  it('handles concurrent session transition attempts deterministically', async () => {
+    const setup = await setupConsentPendingTransport();
+    const [a, b] = await Promise.all([
+      setup.app.inject({
+        method: 'POST',
+        url: `/sessions/${setup.sessionId}/consent`,
+        payload: { telegramUserId: '101' }
+      }),
+      setup.app.inject({
+        method: 'POST',
+        url: `/sessions/${setup.sessionId}/consent`,
+        payload: { telegramUserId: '101' }
+      })
+    ]);
+
+    expect([a.statusCode, b.statusCode].sort()).toEqual([200, 200]);
+    const session = await setup.gateway.getSessionStatus(setup.sessionId, '101');
+    expect(session.state).toBe('CONSENT_PENDING');
+    expect(session.participants.filter((participant) => participant.consentGrantedAt).length).toBe(1);
   });
 });

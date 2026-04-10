@@ -25,10 +25,12 @@ import {
 } from '../../domain/negotiation/types.js';
 import { TransportAccessDeniedError } from '../../domain/protocol/errors.js';
 import { DomainError } from '../../domain/session/errors.js';
+import { AppLogger, createNoopLogger } from '../ports/AppLogger.js';
 
 const RETRY_WINDOW_MS = 20_000;
 
 export interface ActionExecutionContext {
+  correlation_id: string | null;
   channel: TransportChannel;
   idempotency_key: string;
   action_type: string;
@@ -54,7 +56,8 @@ export class ProtocolGatewayService {
     private readonly proposalSetRepository: ProposalSetRepository,
     private readonly trackingRepository: ProtocolTrackingRepository,
     private readonly idGenerator: IdGenerator,
-    private readonly clock: Clock
+    private readonly clock: Clock,
+    private readonly logger: AppLogger = createNoopLogger()
   ) {}
 
   async createSession(
@@ -296,9 +299,28 @@ export class ProtocolGatewayService {
     ctx: ActionExecutionContext,
     execute: () => Promise<T>
   ): Promise<T> {
+    this.logger.info(
+      {
+        correlation_id: ctx.correlation_id,
+        channel: ctx.channel,
+        action_type: ctx.action_type,
+        case_id: ctx.case_id,
+        participant_id: ctx.participant_id
+      },
+      'protocol.action.received'
+    );
+
     const existing = await this.trackingRepository.findIdempotencyRecord(ctx.idempotency_key);
     if (existing) {
       const meta = this.extractMeta(existing.response_json);
+      this.logger.info(
+        {
+          correlation_id: ctx.correlation_id,
+          idempotency_key: ctx.idempotency_key,
+          action_type: ctx.action_type
+        },
+        'protocol.action.replayed.exact_key'
+      );
       await this.trackEvent({
         ctx,
         outcome: ProtocolEventOutcomes.NO_OP,
@@ -320,6 +342,14 @@ export class ProtocolGatewayService {
 
     if (recent) {
       const meta = this.extractMeta(recent.response_json);
+      this.logger.info(
+        {
+          correlation_id: ctx.correlation_id,
+          action_type: ctx.action_type,
+          payload_hash: payloadHash
+        },
+        'protocol.action.replayed.fingerprint'
+      );
       await this.trackEvent({
         ctx,
         outcome: ProtocolEventOutcomes.NO_OP,
@@ -353,8 +383,28 @@ export class ProtocolGatewayService {
         meta
       });
 
+      this.logger.info(
+        {
+          correlation_id: ctx.correlation_id,
+          action_type: ctx.action_type,
+          case_id: caseId,
+          session_state: meta.session_state,
+          proposal_set_version: meta.proposal_set_version,
+          round_number: meta.round_number
+        },
+        'protocol.action.accepted'
+      );
+
       return response;
     } catch (error) {
+      this.logger.warn(
+        {
+          correlation_id: ctx.correlation_id,
+          action_type: ctx.action_type,
+          code: error instanceof DomainError ? error.code : 'INTERNAL_ERROR'
+        },
+        'protocol.action.rejected'
+      );
       await this.trackEvent({
         ctx,
         outcome: ProtocolEventOutcomes.ERROR,

@@ -12,6 +12,7 @@ import { NegotiationService } from './application/services/NegotiationService.js
 import { ProtocolGatewayService } from './application/services/ProtocolGatewayService.js';
 import { buildHttpServer } from './infrastructure/http/server.js';
 import { createLogger } from './infrastructure/logger.js';
+import { InMemoryRateLimiter } from './infrastructure/transport/rateLimiter.js';
 import { prisma } from './infrastructure/db/prisma.js';
 import { PrismaSessionRepository } from './infrastructure/repositories/PrismaSessionRepository.js';
 import { PrismaIntakeRepository } from './infrastructure/repositories/PrismaIntakeRepository.js';
@@ -26,6 +27,7 @@ const bootstrap = async () => {
   const logger = createLogger(env.LOG_LEVEL);
   const clock = new SystemClock();
   const ids = new RandomIdGenerator();
+  const rateLimiter = new InMemoryRateLimiter(clock);
 
   const sessionRepository = new PrismaSessionRepository(prisma);
   const intakeRepository = new PrismaIntakeRepository(prisma);
@@ -76,17 +78,25 @@ const bootstrap = async () => {
     proposalSetRepository,
     protocolTrackingRepository,
     ids,
-    clock
+    clock,
+    logger
   );
 
-  const app = buildHttpServer(gateway);
+  const app = buildHttpServer(gateway, {
+    logger,
+    rate_limiter: rateLimiter,
+    clock
+  });
 
   try {
     await app.listen({ port: env.APP_PORT, host: '0.0.0.0' });
     logger.info({ port: env.APP_PORT }, 'HTTP server started');
 
     if (env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_BOT_TOKEN !== 'replace-me') {
-      const bot = buildTelegramBot(env.TELEGRAM_BOT_TOKEN, gateway);
+      const bot = buildTelegramBot(env.TELEGRAM_BOT_TOKEN, gateway, {
+        logger,
+        rate_limiter: rateLimiter
+      });
       await bot.start();
       logger.info('Telegram bot started');
     } else {

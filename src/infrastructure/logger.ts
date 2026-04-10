@@ -1,4 +1,5 @@
 import pino from 'pino';
+import { AppLogger } from '../application/ports/AppLogger.js';
 
 export const createLogger = (level: string) =>
   pino({

@@ -20,6 +20,12 @@
 - [x] Transport idempotency handling
 - [x] Protocol audit/event persistence
 - [x] Unit + integration tests including transport idempotency/privacy wiring
+- [x] Concurrency/race-condition transport tests
+- [x] Telegram outbound retry/backoff guardrails
+- [x] Transport rate limiting
+- [x] Correlation ID propagation and tracing support
+- [x] Real Postgres runtime integration test suite (env-gated)
+- [x] Visibility matrix documentation
 
 ## Deferred
 - [ ] Reminder/notification workflow

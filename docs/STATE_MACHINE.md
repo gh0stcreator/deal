@@ -93,6 +93,8 @@ Legacy reserved enum values still present for compatibility:
 - Duplicate transport submissions resolve to `NO_OP` with stable response.
 - Unauthorized participant actions are rejected before state transition checks.
 - Every transport-triggered action is persisted as `ProtocolEvent` with outcome and version metadata when available.
+- Rate-limited actions are rejected at transport boundary and never enter domain transitions.
+- Outbound Telegram reply failures do not roll back already-completed protocol transitions.
 
 ## Invariants
 - Invalid transitions return typed errors and do not mutate state.

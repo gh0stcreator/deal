@@ -20,6 +20,12 @@ Help two participants resolve conflict through private structured intake, neutra
 - Telegram command transport mapped 1:1 to application services.
 - HTTP adapter parity for same protocol actions.
 - Transport idempotency and protocol audit event persistence.
+- Phase 7 hardening:
+  - rate limiting and abuse protection in transport
+  - correlation ID propagation through transport and protocol execution
+  - outbound Telegram retry/backoff for transient send failures
+  - concurrency and replay-focused transport tests
+  - Postgres runtime integration test suite (env-gated)
 
 ## Structured data fields
 ### Intake fields

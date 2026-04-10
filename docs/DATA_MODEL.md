@@ -105,6 +105,7 @@
 - `responseJson`
 - `createdAt`
 - index on (`channel`, `caseId`, `participantId`, `actionType`, `payloadHash`, `createdAt`)
+- correlation note: HTTP correlation IDs are prefixed into idempotency keys for traceability.
 
 ### `ProtocolEvent`
 - `id`
@@ -119,6 +120,7 @@
 - `proposalSetVersion` (nullable)
 - `roundNumber` (nullable)
 - `createdAt`
+- correlation note: event lookup can be correlated through `idempotencyKey` (prefixed by transport correlation ID).
 
 ## Enforced boundaries
 - Synthesis consumes confirmed normalized intake models only.

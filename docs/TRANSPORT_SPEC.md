@@ -37,8 +37,9 @@ HTTP endpoints mirror the same protocol actions and call the same gateway/servic
 - key format: `tg:{update_id}:{participant_id}:{action_type}`
 
 ### HTTP
-- if header exists: `x-idempotency-key` -> `http:{header}`
-- otherwise derived key: `http:{request_id}:{sha256(actionType,userId,payload)}`
+- if header exists: `x-idempotency-key` -> `http:{correlation_id}:{header}`
+- otherwise derived key: `http:{correlation_id}:{sha256(actionType,userId,payload)}`
+- note: correlation id is prefixed in HTTP idempotency keys for end-to-end traceability.
 
 ### Retry dedupe window
 - payload fingerprint (`payloadHash`) supports no-op dedupe of rapid retries with different keys.
@@ -48,6 +49,12 @@ HTTP endpoints mirror the same protocol actions and call the same gateway/servic
 - No cross-session access.
 - No cross-participant private artifact access.
 - Unauthorized actions return deterministic transport errors.
+
+## Rate limiting
+- Join/invite brute-force protection: `8 requests / 60s` per participant.
+- General protocol action spam protection: `30 requests / 60s` per participant/session scope.
+- Invalid Telegram command spam protection: `10 requests / 60s` per participant.
+- HTTP returns `429 RATE_LIMITED`; Telegram returns a short retry message.
 
 ## Visibility rules
 - Participants can see: session stage, participant count, consent count, proposal/negotiation status.
@@ -64,3 +71,8 @@ Every transport-triggered protocol action persists `ProtocolEvent` with:
 - `outcome` (`ACCEPTED`, `NO_OP`, `ERROR`)
 - `errorCode` (if any)
 - version metadata (`sessionState`, `proposalSetVersion`, `roundNumber`) when available.
+
+## Outbound delivery resilience
+- Telegram outbound responses are retried with exponential backoff for transient failures.
+- Protocol mutation success is decoupled from outbound delivery success.
+- If outbound delivery fails after mutation, replaying the same action is safe via idempotency.
