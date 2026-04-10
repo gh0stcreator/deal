@@ -15,7 +15,23 @@ Define thin transport wiring over deterministic application services.
 - No conversational fallback mode.
 - No direct repository access from handlers.
 
-## Telegram commands
+## Telegram UX shell (default mode)
+- `/start` opens guided actions with buttons:
+  - `Создать договорённость`
+  - `Присоединиться по приглашению`
+  - `Посмотреть мой статус`
+- Create flow returns:
+  - human-readable confirmation
+  - deep link invite `https://t.me/<bot>?start=join_<token>` (when username is available)
+  - fallback raw token text
+  - status/consent buttons
+- Join flow supports:
+  - deep-link payload via `/start join_<token>`
+  - guided prompt where user pastes token or link
+- Consent is available via button (`Подтвердить участие`) and still available as command.
+- Session status messages show only neutral/session-level fields (`state`, participant/consent counts, next step).
+
+## Telegram debug commands (kept for ops/testing)
 - `/start`
 - `/create_session`
 - `/join_session <invite_token>`

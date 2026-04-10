@@ -64,7 +64,15 @@ Predictable reset workflow (local/dev DB):
 - General protocol actions: `30 requests / 60s` per participant/session.
 - Invalid Telegram command spam: `10 commands / 60s` per participant.
 
-## Telegram commands
+## Telegram UX (default)
+- `/start` opens guided flow with buttons:
+  - `Создать договорённость`
+  - `Присоединиться по приглашению`
+  - `Посмотреть мой статус`
+- Invite supports deep links: `https://t.me/<bot>?start=join_<token>`
+- Consent supports button flow (`Подтвердить участие`) without manual `session_id` typing.
+
+## Telegram debug commands
 - `/start`
 - `/create_session`
 - `/join_session <invite_token>`

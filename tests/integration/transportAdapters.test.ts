@@ -172,6 +172,7 @@ const setupTransport = async (options?: {
   };
 
   const replies: string[] = [];
+  const sentPayloads: Array<{ text: string; reply_markup?: unknown }> = [];
   let sendAttempt = 0;
   bot.api.config.use(async (prev, method, payload, signal) => {
     if (method === 'sendMessage') {
@@ -187,6 +188,10 @@ const setupTransport = async (options?: {
 
       const text = (payload as { text?: string }).text ?? '';
       replies.push(text);
+      sentPayloads.push({
+        text,
+        reply_markup: (payload as { reply_markup?: unknown }).reply_markup
+      });
       return {
         ok: true,
         result: {
@@ -215,6 +220,7 @@ const setupTransport = async (options?: {
     app,
     bot,
     replies,
+    sentPayloads,
     negotiationService,
     getSendAttemptCount: () => sendAttempt
   };
@@ -318,7 +324,278 @@ const sendTelegramCommand = async (
   } as never);
 };
 
+const sendTelegramText = async (
+  bot: Bot,
+  updateId: number,
+  userId: number,
+  text: string
+) => {
+  await bot.handleUpdate({
+    update_id: updateId,
+    message: {
+      message_id: updateId,
+      date: 0,
+      text,
+      from: {
+        id: userId,
+        is_bot: false,
+        first_name: 'user'
+      },
+      chat: {
+        id: userId,
+        type: 'private'
+      }
+    }
+  } as never);
+};
+
+const sendTelegramCallback = async (
+  bot: Bot,
+  updateId: number,
+  userId: number,
+  data: string
+) => {
+  await bot.handleUpdate({
+    update_id: updateId,
+    callback_query: {
+      id: `cb-${updateId}`,
+      from: {
+        id: userId,
+        is_bot: false,
+        first_name: 'user'
+      },
+      chat_instance: `chat-${userId}`,
+      data,
+      message: {
+        message_id: updateId,
+        date: 0,
+        chat: {
+          id: userId,
+          type: 'private'
+        }
+      }
+    }
+  } as never);
+};
+
 describe('transport adapters', () => {
+  it('shows guided start menu with actions instead of raw command list', async () => {
+    const setup = await setupTransport();
+
+    await sendTelegramCommand(setup.bot, 50, 101, '/start');
+
+    const last = setup.sentPayloads[setup.sentPayloads.length - 1];
+    expect(last.text).toContain('Выберите действие');
+    expect(last.reply_markup).toBeTruthy();
+  });
+
+  it('supports create -> deep-link join -> consent flow via UX buttons and start payload', async () => {
+    const clock = new MutableClock(new Date('2026-01-12T00:00:00.000Z'));
+    const ids = new SequentialIdGenerator();
+
+    const sessionRepo = new InMemorySessionRepository();
+    const intakeRepo = new InMemoryIntakeRepository();
+    const summaryRepo = new InMemoryMediationSummaryRepository();
+    const proposalSetRepo = new InMemoryProposalSetRepository();
+    const negotiationRoundRepo = new InMemoryNegotiationRoundRepository();
+    const trackingRepo = new InMemoryProtocolTrackingRepository();
+
+    const mediationService = new MediationService(sessionRepo, clock, ids);
+    const intakeService = new IntakeService(
+      sessionRepo,
+      intakeRepo,
+      new DeterministicIntakeNormalizer(),
+      ids,
+      clock
+    );
+    const synthesisService = new SynthesisService(
+      sessionRepo,
+      intakeRepo,
+      summaryRepo,
+      new DeterministicSynthesisMapper(),
+      ids,
+      clock
+    );
+    const proposalService = new ProposalGenerationService(
+      sessionRepo,
+      summaryRepo,
+      proposalSetRepo,
+      new DeterministicProposalMapper(),
+      ids,
+      clock
+    );
+    const negotiationService = new NegotiationService(
+      sessionRepo,
+      proposalSetRepo,
+      negotiationRoundRepo,
+      ids,
+      clock
+    );
+
+    const gateway = new ProtocolGatewayService(
+      mediationService,
+      intakeService,
+      synthesisService,
+      proposalService,
+      negotiationService,
+      sessionRepo,
+      proposalSetRepo,
+      trackingRepo,
+      ids,
+      clock
+    );
+
+    const bot = buildTelegramBot('test-token', gateway, {
+      rate_limiter: new InMemoryRateLimiter(clock),
+      max_send_attempts: 3,
+      base_backoff_ms: 1,
+      sleep: async () => undefined
+    });
+    (bot as Bot).botInfo = {
+      id: 1,
+      is_bot: true,
+      first_name: 'Ladno',
+      username: 'ladno_bot',
+      can_join_groups: false,
+      can_read_all_group_messages: false,
+      supports_inline_queries: false
+    };
+
+    const replies: string[] = [];
+    bot.api.config.use(async (prev, method, payload, signal) => {
+      if (method === 'sendMessage') {
+        replies.push((payload as { text?: string }).text ?? '');
+        return {
+          ok: true,
+          result: {
+            message_id: replies.length,
+            date: 0,
+            chat: { id: (payload as { chat_id: number }).chat_id, type: 'private' },
+            text: (payload as { text?: string }).text ?? ''
+          }
+        } as never;
+      }
+      return prev(method, payload, signal);
+    });
+
+    await sendTelegramCallback(bot, 60, 101, 'menu:create');
+    const creatorReply = replies[replies.length - 1];
+    expect(creatorReply).toContain('Токен приглашения');
+    const inviteToken = creatorReply.match(/Токен приглашения:\s([A-Za-z0-9_-]+)/)?.[1];
+    const sessionId = creatorReply.match(/session:\s([A-Za-z0-9_-]+)/)?.[1];
+    expect(inviteToken).toBeTruthy();
+    expect(sessionId).toBeTruthy();
+
+    await sendTelegramCommand(bot, 61, 102, `/start join_${inviteToken}`);
+    expect(replies[replies.length - 1]).toContain('Вы присоединились к договорённости');
+
+    await sendTelegramCallback(bot, 62, 101, `consent:${sessionId}`);
+    expect(replies[replies.length - 1]).toContain('Готово: участие подтверждено');
+    expect(replies[replies.length - 1]).toContain('CONSENT_PENDING');
+
+    await sendTelegramCallback(bot, 63, 102, `consent:${sessionId}`);
+    expect(replies[replies.length - 1]).toContain('CONSENTED');
+
+    const session = await gateway.getSessionStatus(sessionId!, '101');
+    expect(session.state).toBe(SessionStates.CONSENTED);
+  });
+
+  it('supports guided join via menu and plain token message', async () => {
+    const clock = new MutableClock(new Date('2026-01-12T00:00:00.000Z'));
+    const ids = new SequentialIdGenerator();
+    const sessionRepo = new InMemorySessionRepository();
+    const intakeRepo = new InMemoryIntakeRepository();
+    const summaryRepo = new InMemoryMediationSummaryRepository();
+    const proposalSetRepo = new InMemoryProposalSetRepository();
+    const negotiationRoundRepo = new InMemoryNegotiationRoundRepository();
+    const trackingRepo = new InMemoryProtocolTrackingRepository();
+
+    const mediationService = new MediationService(sessionRepo, clock, ids);
+    const intakeService = new IntakeService(
+      sessionRepo,
+      intakeRepo,
+      new DeterministicIntakeNormalizer(),
+      ids,
+      clock
+    );
+    const synthesisService = new SynthesisService(
+      sessionRepo,
+      intakeRepo,
+      summaryRepo,
+      new DeterministicSynthesisMapper(),
+      ids,
+      clock
+    );
+    const proposalService = new ProposalGenerationService(
+      sessionRepo,
+      summaryRepo,
+      proposalSetRepo,
+      new DeterministicProposalMapper(),
+      ids,
+      clock
+    );
+    const negotiationService = new NegotiationService(
+      sessionRepo,
+      proposalSetRepo,
+      negotiationRoundRepo,
+      ids,
+      clock
+    );
+    const gateway = new ProtocolGatewayService(
+      mediationService,
+      intakeService,
+      synthesisService,
+      proposalService,
+      negotiationService,
+      sessionRepo,
+      proposalSetRepo,
+      trackingRepo,
+      ids,
+      clock
+    );
+
+    const created = await mediationService.createSession('101');
+
+    const bot = buildTelegramBot('test-token', gateway, {
+      rate_limiter: new InMemoryRateLimiter(clock),
+      max_send_attempts: 3,
+      base_backoff_ms: 1,
+      sleep: async () => undefined
+    });
+    (bot as Bot).botInfo = {
+      id: 1,
+      is_bot: true,
+      first_name: 'Ladno',
+      username: 'ladno_bot',
+      can_join_groups: false,
+      can_read_all_group_messages: false,
+      supports_inline_queries: false
+    };
+
+    const replies: string[] = [];
+    bot.api.config.use(async (prev, method, payload, signal) => {
+      if (method === 'sendMessage') {
+        replies.push((payload as { text?: string }).text ?? '');
+        return {
+          ok: true,
+          result: {
+            message_id: replies.length,
+            date: 0,
+            chat: { id: (payload as { chat_id: number }).chat_id, type: 'private' },
+            text: (payload as { text?: string }).text ?? ''
+          }
+        } as never;
+      }
+      return prev(method, payload, signal);
+    });
+
+    await sendTelegramCallback(bot, 70, 102, 'menu:join');
+    expect(replies[replies.length - 1]).toContain('токен приглашения');
+
+    await sendTelegramText(bot, 71, 102, created.inviteToken);
+    expect(replies[replies.length - 1]).toContain('Вы присоединились к договорённости');
+  });
+
   it('deduplicates repeated Telegram delivery by update_id idempotency key', async () => {
     const setup = await setupTransport();
 

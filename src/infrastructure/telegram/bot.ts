@@ -1,9 +1,10 @@
-import { Bot, Context } from 'grammy';
+import { Bot, Context, InlineKeyboard } from 'grammy';
 import { SystemClock } from '../../application/ports/Clock.js';
 import { AppLogger, createNoopLogger } from '../../application/ports/AppLogger.js';
 import { ProtocolGatewayService } from '../../application/services/ProtocolGatewayService.js';
 import { SuggestEditOperations } from '../../domain/negotiation/types.js';
 import { ProposalVariantTypes } from '../../domain/proposal/types.js';
+import { SessionStates } from '../../domain/session/types.js';
 import { mapTelegramErrorText } from '../transport/errorMapping.js';
 import { InMemoryRateLimiter } from '../transport/rateLimiter.js';
 import {
@@ -17,6 +18,8 @@ const RATE_LIMIT_WINDOW_MS = 60_000;
 const GENERAL_ACTION_LIMIT = 30;
 const JOIN_ATTEMPT_LIMIT = 8;
 const INVALID_COMMAND_LIMIT = 10;
+
+type PendingInputKind = 'JOIN_TOKEN' | 'STATUS_SESSION_ID';
 
 const parseArgs = (text: string | undefined): string[] => {
   if (!text) {
@@ -74,6 +77,63 @@ const renderNegotiation = (view: ReturnType<typeof mapNegotiationRoundStatusView
     `round_status: ${view.round_status ?? 'none'}`
   ].join('\n');
 
+const startKeyboard = () =>
+  new InlineKeyboard()
+    .text('Создать договорённость', 'menu:create')
+    .row()
+    .text('Присоединиться по приглашению', 'menu:join')
+    .row()
+    .text('Посмотреть мой статус', 'menu:status');
+
+const consentKeyboard = (sessionId: string) =>
+  new InlineKeyboard()
+    .text('Подтвердить участие', `consent:${sessionId}`)
+    .row()
+    .text('Показать статус', `status:${sessionId}`);
+
+const extractInviteToken = (value: string): string | null => {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const fromStartPayload = trimmed.match(/\/start\s+join_([A-Za-z0-9_-]+)/i);
+  if (fromStartPayload) {
+    return fromStartPayload[1];
+  }
+
+  const fromDeepLink = trimmed.match(/[?&]start=join_([A-Za-z0-9_-]+)/i);
+  if (fromDeepLink) {
+    return fromDeepLink[1];
+  }
+
+  const plainJoinPayload = trimmed.match(/^join_([A-Za-z0-9_-]+)$/i);
+  if (plainJoinPayload) {
+    return plainJoinPayload[1];
+  }
+
+  const plainToken = trimmed.match(/^[A-Za-z0-9_-]{12,}$/);
+  if (plainToken) {
+    return plainToken[0];
+  }
+
+  return null;
+};
+
+const ensureSessionId = (value: string): string | null => {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const raw = trimmed.split(/\s+/g)[0] ?? '';
+  if (!raw) {
+    return null;
+  }
+
+  return /^[A-Za-z0-9_-]{3,}$/.test(raw) ? raw : null;
+};
+
 export interface TelegramBotOptions {
   logger?: AppLogger;
   rate_limiter?: InMemoryRateLimiter;
@@ -97,7 +157,11 @@ const isTransientTelegramSendError = (error: unknown): boolean => {
   }
 
   const description = maybeError.description?.toLowerCase() ?? '';
-  return description.includes('timeout') || description.includes('temporarily') || description.includes('network');
+  return (
+    description.includes('timeout') ||
+    description.includes('temporarily') ||
+    description.includes('network')
+  );
 };
 
 export const buildTelegramBot = (
@@ -109,16 +173,22 @@ export const buildTelegramBot = (
   const rateLimiter = options.rate_limiter ?? new InMemoryRateLimiter(new SystemClock());
   const maxSendAttempts = options.max_send_attempts ?? 3;
   const baseBackoffMs = options.base_backoff_ms ?? 150;
-  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const sleep =
+    options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const pendingInput = new Map<string, PendingInputKind>();
+  const lastSessionByUser = new Map<string, string>();
+
+  const bot = new Bot(token);
 
   const sendReplyWithRetry = async (
     ctx: Context,
     text: string,
-    metadata: { correlation_id: string; action_type: string }
+    metadata: { correlation_id: string; action_type: string },
+    extra?: { reply_markup?: InlineKeyboard }
   ): Promise<boolean> => {
     for (let attempt = 1; attempt <= maxSendAttempts; attempt += 1) {
       try {
-        await ctx.reply(text);
+        await ctx.reply(text, extra);
         logger.info(
           {
             correlation_id: metadata.correlation_id,
@@ -167,10 +237,14 @@ export const buildTelegramBot = (
     actionType: string
   ) => {
     if (args.length < count) {
-      await sendReplyWithRetry(ctx, usage, {
-        correlation_id: makeCorrelationId(ctx),
-        action_type: actionType
-      });
+      await sendReplyWithRetry(
+        ctx,
+        usage,
+        {
+          correlation_id: makeCorrelationId(ctx),
+          action_type: actionType
+        }
+      );
       return false;
     }
 
@@ -208,34 +282,115 @@ export const buildTelegramBot = (
     return false;
   };
 
-  const bot = new Bot(token);
+  const safeAnswerCallback = async (ctx: Context) => {
+    if (!ctx.callbackQuery) {
+      return;
+    }
+    try {
+      await ctx.answerCallbackQuery();
+    } catch {
+      // no-op
+    }
+  };
 
-  bot.command('start', async (ctx) => {
-    await sendReplyWithRetry(
-      ctx,
-      [
-        'Ladno protocol commands:',
-        '/create_session',
-        '/join_session <invite_token>',
-        '/give_consent <session_id>',
-        '/resume_intake <session_id>',
-        '/confirm_summary <session_id>',
-        '/reopen_intake <session_id>',
-        '/generate_proposals <session_id>',
-        '/select_preferred <session_id> <BALANCED|A_LEANING|B_LEANING>',
-        '/accept_proposal <session_id> <BALANCED|A_LEANING|B_LEANING>',
-        '/reject_proposal <session_id> <BALANCED|A_LEANING|B_LEANING>',
-        '/suggest_edit <session_id> <variant> <clause_id> <operation> [proposed_value]'
-      ].join('\n'),
-      {
+  const describeSessionForUser = async (
+    ctx: Context,
+    sessionId: string,
+    telegramUserId: string
+  ): Promise<void> => {
+    try {
+      const session = await gateway.getSessionStatus(sessionId, telegramUserId);
+      lastSessionByUser.set(telegramUserId, sessionId);
+      const view = mapSessionStatusView(session);
+      const self = session.participants.find((participant) => participant.telegramUserId === telegramUserId);
+      const consentPending =
+        session.state === SessionStates.CONSENT_PENDING && self && !self.consentGrantedAt;
+
+      const nextStep =
+        session.state === SessionStates.INVITED
+          ? 'Следующий шаг: пригласите вторую сторону по ссылке.'
+          : session.state === SessionStates.CONSENT_PENDING && consentPending
+            ? 'Следующий шаг: подтвердите участие.'
+            : session.state === SessionStates.CONSENT_PENDING
+              ? 'Ожидаем подтверждение от второй стороны.'
+              : session.state === SessionStates.CONSENTED
+                ? 'Обе стороны подтвердили участие. Можно продолжать медиацию.'
+                : 'Статус обновлён.';
+
+      await sendReplyWithRetry(
+        ctx,
+        [`Статус сессии:`, renderSession(view), nextStep].join('\n'),
+        {
+          correlation_id: makeCorrelationId(ctx),
+          action_type: 'session_status'
+        },
+        consentPending ? { reply_markup: consentKeyboard(sessionId) } : undefined
+      );
+    } catch (error) {
+      await sendReplyWithRetry(ctx, mapTelegramErrorText(error), {
         correlation_id: makeCorrelationId(ctx),
-        action_type: 'start'
-      }
-    );
-  });
+        action_type: 'session_status'
+      });
+    }
+  };
 
-  bot.command('create_session', async (ctx) => {
-    const telegramUserId = userIdFromCtx(ctx);
+  const joinWithToken = async (
+    ctx: Context,
+    telegramUserId: string,
+    inviteToken: string,
+    actionType: string
+  ) => {
+    const correlationId = makeCorrelationId(ctx);
+    if (
+      !(await enforceRateLimit(ctx, {
+        key: `tg:join:${telegramUserId}`,
+        limit: JOIN_ATTEMPT_LIMIT,
+        action_type: actionType
+      }))
+    ) {
+      return;
+    }
+
+    try {
+      const result = await gateway.joinSession(
+        {
+          correlation_id: correlationId,
+          channel: 'TELEGRAM',
+          idempotency_key: makeKey(ctx, 'join_session'),
+          action_type: 'join_session',
+          case_id: null,
+          participant_id: telegramUserId,
+          payload: { invite_token: inviteToken }
+        },
+        telegramUserId,
+        inviteToken
+      );
+      pendingInput.delete(telegramUserId);
+      lastSessionByUser.set(telegramUserId, result.session_id);
+
+      await sendReplyWithRetry(
+        ctx,
+        [
+          'Вы присоединились к договорённости.',
+          `session: ${result.session_id}`,
+          `state: ${result.state}`,
+          'Следующий шаг: подтвердите участие.'
+        ].join('\n'),
+        {
+          correlation_id: correlationId,
+          action_type: actionType
+        },
+        { reply_markup: consentKeyboard(result.session_id) }
+      );
+    } catch (error) {
+      await sendReplyWithRetry(ctx, mapTelegramErrorText(error), {
+        correlation_id: correlationId,
+        action_type: actionType
+      });
+    }
+  };
+
+  const createSessionFlow = async (ctx: Context, telegramUserId: string) => {
     const correlationId = makeCorrelationId(ctx);
     if (
       !(await enforceRateLimit(ctx, {
@@ -261,10 +416,34 @@ export const buildTelegramBot = (
         telegramUserId
       );
 
+      lastSessionByUser.set(telegramUserId, result.session_id);
+      const username = bot.botInfo?.username ?? ctx.me;
+      const deepLink = username
+        ? `https://t.me/${username}?start=join_${result.invite_token}`
+        : null;
+
+      const keyboard = new InlineKeyboard()
+        .text('Проверить статус', `status:${result.session_id}`)
+        .row()
+        .text('Подтвердить участие', `consent:${result.session_id}`);
+      if (deepLink) {
+        keyboard.row().url('Ссылка для приглашения', deepLink);
+      }
+
+      const text = [
+        'Готово. Я создал новую договорённость.',
+        'Отправьте приглашение второй стороне:',
+        deepLink ? `Ссылка: ${deepLink}` : 'Ссылка недоступна. Отправьте токен ниже.',
+        `Токен приглашения: ${result.invite_token}`,
+        `session: ${result.session_id}`,
+        'После подключения второй стороны подтвердите участие кнопкой.'
+      ].join('\n');
+
       await sendReplyWithRetry(
         ctx,
-        `Session created: ${result.session_id}\nstate: ${result.state}\ninvite_token: ${result.invite_token}`,
-        { correlation_id: correlationId, action_type: 'create_session' }
+        text,
+        { correlation_id: correlationId, action_type: 'create_session' },
+        { reply_markup: keyboard }
       );
     } catch (error) {
       await sendReplyWithRetry(ctx, mapTelegramErrorText(error), {
@@ -272,64 +451,13 @@ export const buildTelegramBot = (
         action_type: 'create_session'
       });
     }
-  });
+  };
 
-  bot.command('join_session', async (ctx) => {
-    const args = parseArgs(ctx.message?.text);
-    if (!(await requireArgCount(ctx, args, 1, 'Usage: /join_session <invite_token>', 'join_session'))) {
-      return;
-    }
-
-    const telegramUserId = userIdFromCtx(ctx);
+  const giveConsentFlow = async (ctx: Context, sessionId: string, telegramUserId: string, actionType: string) => {
     const correlationId = makeCorrelationId(ctx);
     if (
       !(await enforceRateLimit(ctx, {
-        key: `tg:join:${telegramUserId}`,
-        limit: JOIN_ATTEMPT_LIMIT,
-        action_type: 'join_session'
-      }))
-    ) {
-      return;
-    }
-
-    try {
-      const result = await gateway.joinSession(
-        {
-          correlation_id: correlationId,
-          channel: 'TELEGRAM',
-          idempotency_key: makeKey(ctx, 'join_session'),
-          action_type: 'join_session',
-          case_id: null,
-          participant_id: telegramUserId,
-          payload: { invite_token: args[0] }
-        },
-        telegramUserId,
-        args[0]
-      );
-
-      await sendReplyWithRetry(ctx, `Joined session ${result.session_id}\nstate: ${result.state}`, {
-        correlation_id: correlationId,
-        action_type: 'join_session'
-      });
-    } catch (error) {
-      await sendReplyWithRetry(ctx, mapTelegramErrorText(error), {
-        correlation_id: correlationId,
-        action_type: 'join_session'
-      });
-    }
-  });
-
-  bot.command('give_consent', async (ctx) => {
-    const args = parseArgs(ctx.message?.text);
-    if (!(await requireArgCount(ctx, args, 1, 'Usage: /give_consent <session_id>', 'give_consent'))) {
-      return;
-    }
-
-    const telegramUserId = userIdFromCtx(ctx);
-    const correlationId = makeCorrelationId(ctx);
-    if (
-      !(await enforceRateLimit(ctx, {
-        key: `tg:action:${telegramUserId}:${args[0]}`,
+        key: `tg:action:${telegramUserId}:${sessionId}`,
         limit: GENERAL_ACTION_LIMIT,
         action_type: 'give_consent'
       }))
@@ -344,26 +472,98 @@ export const buildTelegramBot = (
           channel: 'TELEGRAM',
           idempotency_key: makeKey(ctx, 'give_consent'),
           action_type: 'give_consent',
-          case_id: args[0],
+          case_id: sessionId,
           participant_id: telegramUserId,
-          payload: { session_id: args[0] }
+          payload: { session_id: sessionId }
         },
-        args[0],
+        sessionId,
         telegramUserId
       );
+      lastSessionByUser.set(telegramUserId, sessionId);
+      const session = await gateway.getSessionStatus(sessionId, telegramUserId);
+      const view = mapSessionStatusView(session);
+      const nextStep =
+        result.state === SessionStates.CONSENTED
+          ? 'Обе стороны подтвердили участие.'
+          : 'Ваше участие подтверждено. Ждём вторую сторону.';
 
-      const session = await gateway.getSessionStatus(args[0], telegramUserId);
       await sendReplyWithRetry(
         ctx,
-        [`consent: ${result.state}`, renderSession(mapSessionStatusView(session))].join('\n'),
-        { correlation_id: correlationId, action_type: 'give_consent' }
+        [`Готово: участие подтверждено.`, renderSession(view), nextStep].join('\n'),
+        {
+          correlation_id: correlationId,
+          action_type: actionType
+        }
       );
     } catch (error) {
       await sendReplyWithRetry(ctx, mapTelegramErrorText(error), {
         correlation_id: correlationId,
-        action_type: 'give_consent'
+        action_type: actionType
       });
     }
+  };
+
+  bot.command('start', async (ctx) => {
+    const telegramUserId = userIdFromCtx(ctx);
+    const args = parseArgs(ctx.message?.text);
+    const joinPayload = args[0]?.startsWith('join_') ? args[0].slice(5) : null;
+
+    if (joinPayload) {
+      await joinWithToken(ctx, telegramUserId, joinPayload, 'start_join');
+      return;
+    }
+
+    pendingInput.delete(telegramUserId);
+    await sendReplyWithRetry(
+      ctx,
+      ['Привет. Я помогу провести медиацию между двумя сторонами.', 'Выберите действие:'].join('\n'),
+      {
+        correlation_id: makeCorrelationId(ctx),
+        action_type: 'start'
+      },
+      { reply_markup: startKeyboard() }
+    );
+  });
+
+  bot.command('create_session', async (ctx) => {
+    await createSessionFlow(ctx, userIdFromCtx(ctx));
+  });
+
+  bot.command('join_session', async (ctx) => {
+    const args = parseArgs(ctx.message?.text);
+    const telegramUserId = userIdFromCtx(ctx);
+    if (args.length === 0) {
+      pendingInput.set(telegramUserId, 'JOIN_TOKEN');
+      await sendReplyWithRetry(
+        ctx,
+        'Отправьте токен приглашения или ссылку вида https://t.me/<bot>?start=join_<token>.',
+        {
+          correlation_id: makeCorrelationId(ctx),
+          action_type: 'join_session_prompt'
+        }
+      );
+      return;
+    }
+
+    const inviteToken = extractInviteToken(args[0]);
+    if (!inviteToken) {
+      await sendReplyWithRetry(ctx, 'Не удалось распознать токен приглашения.', {
+        correlation_id: makeCorrelationId(ctx),
+        action_type: 'join_session'
+      });
+      return;
+    }
+
+    await joinWithToken(ctx, telegramUserId, inviteToken, 'join_session');
+  });
+
+  bot.command('give_consent', async (ctx) => {
+    const args = parseArgs(ctx.message?.text);
+    if (!(await requireArgCount(ctx, args, 1, 'Usage: /give_consent <session_id>', 'give_consent'))) {
+      return;
+    }
+
+    await giveConsentFlow(ctx, args[0], userIdFromCtx(ctx), 'give_consent');
   });
 
   bot.command('resume_intake', async (ctx) => {
@@ -564,10 +764,11 @@ export const buildTelegramBot = (
 
     const correlationId = makeCorrelationId(ctx);
     if (!variantValues.includes(args[1] as (typeof variantValues)[number])) {
-      await sendReplyWithRetry(ctx, 'Invalid variant type.', {
-        correlation_id: correlationId,
-        action_type: 'select_preferred'
-      });
+      await sendReplyWithRetry(
+        ctx,
+        'Invalid variant type.',
+        { correlation_id: correlationId, action_type: 'select_preferred' }
+      );
       return;
     }
 
@@ -604,10 +805,11 @@ export const buildTelegramBot = (
         action_type: 'select_preferred'
       });
     } catch (error) {
-      await sendReplyWithRetry(ctx, mapTelegramErrorText(error), {
-        correlation_id: correlationId,
-        action_type: 'select_preferred'
-      });
+      await sendReplyWithRetry(
+        ctx,
+        mapTelegramErrorText(error),
+        { correlation_id: correlationId, action_type: 'select_preferred' }
+      );
     }
   });
 
@@ -627,10 +829,11 @@ export const buildTelegramBot = (
 
     const correlationId = makeCorrelationId(ctx);
     if (!variantValues.includes(args[1] as (typeof variantValues)[number])) {
-      await sendReplyWithRetry(ctx, 'Invalid variant type.', {
-        correlation_id: correlationId,
-        action_type: 'accept_proposal'
-      });
+      await sendReplyWithRetry(
+        ctx,
+        'Invalid variant type.',
+        { correlation_id: correlationId, action_type: 'accept_proposal' }
+      );
       return;
     }
 
@@ -667,10 +870,11 @@ export const buildTelegramBot = (
         action_type: 'accept_proposal'
       });
     } catch (error) {
-      await sendReplyWithRetry(ctx, mapTelegramErrorText(error), {
-        correlation_id: correlationId,
-        action_type: 'accept_proposal'
-      });
+      await sendReplyWithRetry(
+        ctx,
+        mapTelegramErrorText(error),
+        { correlation_id: correlationId, action_type: 'accept_proposal' }
+      );
     }
   });
 
@@ -690,10 +894,11 @@ export const buildTelegramBot = (
 
     const correlationId = makeCorrelationId(ctx);
     if (!variantValues.includes(args[1] as (typeof variantValues)[number])) {
-      await sendReplyWithRetry(ctx, 'Invalid variant type.', {
-        correlation_id: correlationId,
-        action_type: 'reject_proposal'
-      });
+      await sendReplyWithRetry(
+        ctx,
+        'Invalid variant type.',
+        { correlation_id: correlationId, action_type: 'reject_proposal' }
+      );
       return;
     }
 
@@ -730,10 +935,11 @@ export const buildTelegramBot = (
         action_type: 'reject_proposal'
       });
     } catch (error) {
-      await sendReplyWithRetry(ctx, mapTelegramErrorText(error), {
-        correlation_id: correlationId,
-        action_type: 'reject_proposal'
-      });
+      await sendReplyWithRetry(
+        ctx,
+        mapTelegramErrorText(error),
+        { correlation_id: correlationId, action_type: 'reject_proposal' }
+      );
     }
   });
 
@@ -753,18 +959,20 @@ export const buildTelegramBot = (
 
     const correlationId = makeCorrelationId(ctx);
     if (!variantValues.includes(args[1] as (typeof variantValues)[number])) {
-      await sendReplyWithRetry(ctx, 'Invalid variant type.', {
-        correlation_id: correlationId,
-        action_type: 'suggest_edit'
-      });
+      await sendReplyWithRetry(
+        ctx,
+        'Invalid variant type.',
+        { correlation_id: correlationId, action_type: 'suggest_edit' }
+      );
       return;
     }
 
     if (!operationValues.includes(args[3] as (typeof operationValues)[number])) {
-      await sendReplyWithRetry(ctx, 'Invalid edit operation.', {
-        correlation_id: correlationId,
-        action_type: 'suggest_edit'
-      });
+      await sendReplyWithRetry(
+        ctx,
+        'Invalid edit operation.',
+        { correlation_id: correlationId, action_type: 'suggest_edit' }
+      );
       return;
     }
 
@@ -814,30 +1022,124 @@ export const buildTelegramBot = (
         action_type: 'suggest_edit'
       });
     } catch (error) {
-      await sendReplyWithRetry(ctx, mapTelegramErrorText(error), {
-        correlation_id: correlationId,
-        action_type: 'suggest_edit'
-      });
+      await sendReplyWithRetry(
+        ctx,
+        mapTelegramErrorText(error),
+        { correlation_id: correlationId, action_type: 'suggest_edit' }
+      );
     }
   });
 
-  bot.hears(/^\/(?!start$|create_session$|join_session$|give_consent$|resume_intake$|confirm_summary$|reopen_intake$|generate_proposals$|select_preferred$|accept_proposal$|reject_proposal$|suggest_edit$)[a-z_]+$/, async (ctx) => {
-    const participantId = userIdFromCtx(ctx);
-    if (
-      !(await enforceRateLimit(ctx, {
-        key: `tg:invalid:${participantId}`,
-        limit: INVALID_COMMAND_LIMIT,
-        action_type: 'invalid_command'
-      }))
-    ) {
+  bot.callbackQuery(/^menu:(create|join|status)$/, async (ctx) => {
+    await safeAnswerCallback(ctx);
+    const telegramUserId = userIdFromCtx(ctx);
+    const action = ctx.match[1];
+
+    if (action === 'create') {
+      await createSessionFlow(ctx, telegramUserId);
       return;
     }
 
-    await sendReplyWithRetry(ctx, 'Unknown command. Use /start to see supported commands.', {
-      correlation_id: makeCorrelationId(ctx),
-      action_type: 'invalid_command'
-    });
+    if (action === 'join') {
+      pendingInput.set(telegramUserId, 'JOIN_TOKEN');
+      await sendReplyWithRetry(
+        ctx,
+        'Отправьте токен приглашения или ссылку-приглашение сюда.',
+        {
+          correlation_id: makeCorrelationId(ctx),
+          action_type: 'join_prompt'
+        }
+      );
+      return;
+    }
+
+    const lastSession = lastSessionByUser.get(telegramUserId);
+    if (lastSession) {
+      await describeSessionForUser(ctx, lastSession, telegramUserId);
+      return;
+    }
+
+    pendingInput.set(telegramUserId, 'STATUS_SESSION_ID');
+    await sendReplyWithRetry(
+      ctx,
+      'Отправьте session id, чтобы показать статус.',
+      {
+        correlation_id: makeCorrelationId(ctx),
+        action_type: 'status_prompt'
+      }
+    );
   });
+
+  bot.callbackQuery(/^consent:([A-Za-z0-9_-]{3,})$/, async (ctx) => {
+    await safeAnswerCallback(ctx);
+    await giveConsentFlow(ctx, ctx.match[1], userIdFromCtx(ctx), 'give_consent_button');
+  });
+
+  bot.callbackQuery(/^status:([A-Za-z0-9_-]{3,})$/, async (ctx) => {
+    await safeAnswerCallback(ctx);
+    const sessionId = ctx.match[1];
+    const telegramUserId = userIdFromCtx(ctx);
+    await describeSessionForUser(ctx, sessionId, telegramUserId);
+  });
+
+  bot.on('message:text', async (ctx, next) => {
+    const text = ctx.message.text;
+    if (!text || text.startsWith('/')) {
+      return next();
+    }
+
+    const telegramUserId = userIdFromCtx(ctx);
+    const waiting = pendingInput.get(telegramUserId);
+    if (!waiting) {
+      return next();
+    }
+
+    if (waiting === 'JOIN_TOKEN') {
+      const tokenValue = extractInviteToken(text);
+      if (!tokenValue) {
+        await sendReplyWithRetry(ctx, 'Не удалось распознать токен. Пришлите токен или ссылку.', {
+          correlation_id: makeCorrelationId(ctx),
+          action_type: 'join_token_parse'
+        });
+        return;
+      }
+      await joinWithToken(ctx, telegramUserId, tokenValue, 'join_session_text');
+      return;
+    }
+
+    const sessionId = ensureSessionId(text);
+    if (!sessionId) {
+      await sendReplyWithRetry(ctx, 'Не удалось распознать session id. Пришлите идентификатор сессии.', {
+        correlation_id: makeCorrelationId(ctx),
+        action_type: 'status_session_parse'
+      });
+      return;
+    }
+
+    pendingInput.delete(telegramUserId);
+    await describeSessionForUser(ctx, sessionId, telegramUserId);
+  });
+
+  bot.hears(
+    /^\/(?!start$|create_session$|join_session$|give_consent$|resume_intake$|confirm_summary$|reopen_intake$|generate_proposals$|select_preferred$|accept_proposal$|reject_proposal$|suggest_edit$)[a-z_]+$/,
+    async (ctx) => {
+      const participantId = userIdFromCtx(ctx);
+      if (
+        !(await enforceRateLimit(ctx, {
+          key: `tg:invalid:${participantId}`,
+          limit: INVALID_COMMAND_LIMIT,
+          action_type: 'invalid_command'
+        }))
+      ) {
+        return;
+      }
+
+      await sendReplyWithRetry(ctx, 'Неизвестная команда. Нажмите /start и выберите действие.', {
+        correlation_id: makeCorrelationId(ctx),
+        action_type: 'invalid_command'
+      });
+    }
+  );
 
   return bot;
 };
