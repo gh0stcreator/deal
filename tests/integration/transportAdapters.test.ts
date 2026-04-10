@@ -499,6 +499,11 @@ describe('transport adapters', () => {
     expect(creatorReply).toContain('Открой приглашение и отправь его второму человеку.');
     expect(creatorReply).toContain('user хочет обсудить с вами:');
     expect(creatorReply).toContain('«Сроки и оплата за проект»');
+    const creatorActionsBeforeJoin = JSON.stringify(sentPayloads[sentPayloads.length - 1].reply_markup);
+    expect(creatorActionsBeforeJoin).toContain('invite:send');
+    expect(creatorActionsBeforeJoin).toContain('invite:details');
+    expect(creatorActionsBeforeJoin).toContain('status:');
+    expect(creatorActionsBeforeJoin).not.toContain('consent:');
     await sendTelegramCallback(bot, 62, 101, 'invite:details');
     const inviteDetails = replies[replies.length - 1];
     const inviteToken = inviteDetails.match(/Если ссылка не сработает, отправь этот токен:\n([A-Za-z0-9_-]+)/)?.[1];
@@ -509,7 +514,11 @@ describe('transport adapters', () => {
     expect(session?.problemTopic).toBe('Сроки и оплата за проект');
 
     await sendTelegramCommand(bot, 63, 102, `/start join_${inviteToken}`);
-    expect(replies[replies.length - 1]).toContain('Ты подключился к договорённости');
+    expect(replies.some((entry) => entry.includes('Ты подключился к договорённости.'))).toBe(true);
+    expect(replies.some((entry) => entry.includes('Второй человек подключился.'))).toBe(true);
+    expect(
+      replies.some((entry) => entry.includes('Теперь вы оба можете подтвердить участие.'))
+    ).toBe(true);
 
     await sendTelegramCallback(bot, 64, 101, `consent:${sessionId}`);
     expect(replies[replies.length - 1]).toContain('Ты подтвердил участие');
@@ -664,7 +673,7 @@ describe('transport adapters', () => {
     expect(replies[replies.length - 1]).toContain('Отправь ссылку-приглашение или токен');
 
     await sendTelegramText(bot, 71, 102, created.inviteToken);
-    expect(replies[replies.length - 1]).toContain('Ты подключился к договорённости');
+    expect(replies.some((message) => message.includes('Ты подключился к договорённости'))).toBe(true);
   });
 
   it('deduplicates repeated Telegram delivery by update_id idempotency key', async () => {

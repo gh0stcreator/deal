@@ -492,6 +492,24 @@ export const buildTelegramBot = (
         },
         { reply_markup: consentKeyboard(result.session_id) }
       );
+
+      if (result.state === SessionStates.CONSENT_PENDING) {
+        const session = await gateway.getSessionStatus(result.session_id, telegramUserId);
+        for (const participant of session.participants) {
+          if (participant.telegramUserId === telegramUserId) {
+            continue;
+          }
+          await sendDirectWithRetry(
+            participant.telegramUserId,
+            ['Второй человек подключился.', 'Теперь вы оба можете подтвердить участие.'].join('\n'),
+            {
+              correlation_id: `tg:join_notify:${result.session_id}:${participant.telegramUserId}`,
+              action_type: 'join_notify_creator'
+            },
+            { reply_markup: consentKeyboard(result.session_id) }
+          );
+        }
+      }
     } catch (error) {
       if (error instanceof DomainError && error.code === 'DUPLICATE_JOIN') {
         await sendReplyWithRetry(
@@ -560,8 +578,6 @@ export const buildTelegramBot = (
         .text('Показать приглашение', 'invite:send')
         .row()
         .text('Если ссылка не сработает', 'invite:details')
-        .row()
-        .text('Подтвердить участие', `consent:${result.session_id}`)
         .row()
         .text('Посмотреть статус', `status:${result.session_id}`);
 
