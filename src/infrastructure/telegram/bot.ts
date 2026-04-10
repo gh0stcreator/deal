@@ -80,6 +80,8 @@ const startKeyboard = () =>
     .row()
     .text('Посмотреть статус', 'menu:status');
 
+const welcomeKeyboard = () => new InlineKeyboard().text('Начать', 'menu:begin');
+
 const consentKeyboard = (sessionId: string) =>
   new InlineKeyboard()
     .text('Подтвердить участие', `consent:${sessionId}`)
@@ -707,12 +709,25 @@ export const buildTelegramBot = (
     pendingInput.delete(telegramUserId);
     await sendReplyWithRetry(
       ctx,
-      ['Помогу спокойно договориться и зафиксировать результат.', '', 'Что хочешь сделать?'].join('\n'),
+      [
+        'Привет.',
+        '',
+        'Я помогаю двум людям спокойно договориться, если обсуждать напрямую сложно.',
+        '',
+        'Как это работает:',
+        '— каждый из вас сначала пишет свою версию отдельно',
+        '— я собираю общую картину',
+        '— помогаю вам найти решение',
+        '',
+        'Ваши сообщения не пересылаются друг другу напрямую.',
+        '',
+        'Готовы начать?'
+      ].join('\n'),
       {
         correlation_id: makeCorrelationId(ctx),
         action_type: 'start'
       },
-      { reply_markup: startKeyboard() }
+      { reply_markup: welcomeKeyboard() }
     );
   });
 
@@ -1230,10 +1245,23 @@ export const buildTelegramBot = (
     }
   });
 
-  bot.callbackQuery(/^menu:(create|join|status)$/, async (ctx) => {
+  bot.callbackQuery(/^menu:(begin|create|join|status)$/, async (ctx) => {
     await safeAnswerCallback(ctx);
     const telegramUserId = userIdFromCtx(ctx);
     const action = ctx.match[1];
+
+    if (action === 'begin') {
+      await sendReplyWithRetry(
+        ctx,
+        'Что хочешь сделать?',
+        {
+          correlation_id: makeCorrelationId(ctx),
+          action_type: 'menu_begin'
+        },
+        { reply_markup: startKeyboard() }
+      );
+      return;
+    }
 
     if (action === 'create') {
       pendingInput.set(telegramUserId, 'CREATE_TOPIC');

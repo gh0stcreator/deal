@@ -383,14 +383,24 @@ const sendTelegramCallback = async (
 };
 
 describe('transport adapters', () => {
-  it('shows guided start menu with actions instead of raw command list', async () => {
+  it('shows concise welcome with begin button, then guided action menu', async () => {
     const setup = await setupTransport();
 
     await sendTelegramCommand(setup.bot, 50, 101, '/start');
 
-    const last = setup.sentPayloads[setup.sentPayloads.length - 1];
-    expect(last.text).toContain('Что хочешь сделать?');
-    expect(last.reply_markup).toBeTruthy();
+    const welcome = setup.sentPayloads[setup.sentPayloads.length - 1];
+    expect(welcome.text).toContain('Привет.');
+    expect(welcome.text).toContain('Как это работает:');
+    expect(welcome.text).toContain('Готовы начать?');
+    expect(JSON.stringify(welcome.reply_markup)).toContain('menu:begin');
+
+    await sendTelegramCallback(setup.bot, 51, 101, 'menu:begin');
+
+    const menu = setup.sentPayloads[setup.sentPayloads.length - 1];
+    expect(menu.text).toContain('Что хочешь сделать?');
+    expect(JSON.stringify(menu.reply_markup)).toContain('menu:create');
+    expect(JSON.stringify(menu.reply_markup)).toContain('menu:join');
+    expect(JSON.stringify(menu.reply_markup)).toContain('menu:status');
   });
 
   it('supports create -> deep-link join -> consent flow via UX buttons and start payload', async () => {
