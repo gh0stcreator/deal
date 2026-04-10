@@ -397,7 +397,7 @@ describe('transport adapters', () => {
     await sendTelegramCallback(setup.bot, 51, 101, 'menu:begin');
 
     const menu = setup.sentPayloads[setup.sentPayloads.length - 1];
-    expect(menu.text).toContain('Что хочешь сделать?');
+    expect(menu.text).toContain('С кем хочешь договориться?');
     expect(JSON.stringify(menu.reply_markup)).toContain('menu:create');
     expect(JSON.stringify(menu.reply_markup)).toContain('menu:join');
     expect(JSON.stringify(menu.reply_markup)).toContain('menu:status');

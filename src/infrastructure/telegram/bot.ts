@@ -1253,7 +1253,7 @@ export const buildTelegramBot = (
     if (action === 'begin') {
       await sendReplyWithRetry(
         ctx,
-        'Что хочешь сделать?',
+        'С кем хочешь договориться?',
         {
           correlation_id: makeCorrelationId(ctx),
           action_type: 'menu_begin'
