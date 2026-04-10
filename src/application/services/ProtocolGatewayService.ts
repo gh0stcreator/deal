@@ -46,6 +46,13 @@ interface ActionExecutionMeta {
 }
 
 export class ProtocolGatewayService {
+  /**
+   * Phase-specific alias:
+   * "problem statement" is currently persisted in intake `facts` to avoid schema churn
+   * before synthesis is enabled.
+   */
+  private static readonly PROBLEM_STATEMENT_FIELD = 'facts' as const;
+
   constructor(
     private readonly mediationService: MediationService,
     private readonly intakeService: IntakeService,
@@ -168,7 +175,7 @@ export class ProtocolGatewayService {
       await this.intakeService.submitFieldAnswer({
         sessionId,
         telegramUserId,
-        field: 'facts',
+        field: ProtocolGatewayService.PROBLEM_STATEMENT_FIELD,
         rawValue: text,
         expectedVersion: intake.version
       });

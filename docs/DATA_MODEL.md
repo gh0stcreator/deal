@@ -38,6 +38,7 @@
 - `normalizedValue`
 - `updatedAt`
 - unique (`intakeId`, `field`)
+- naming note: in current Telegram UX layer, the participant "problem statement" step is mapped to intake field `facts` as a temporary storage alias (`problem_statement -> facts`) until dedicated field migration.
 
 ### `IntakeRawMessage`
 - append-only raw participant messages

@@ -1222,22 +1222,13 @@ export const buildTelegramBot = (
     const sessionId = ctx.match[1];
     const telegramUserId = userIdFromCtx(ctx);
     problemConfirmed.add(`${sessionId}:${telegramUserId}`);
-    await sendReplyWithRetry(
-      ctx,
-      'Принял.',
-      {
-        correlation_id: makeCorrelationId(ctx),
-        action_type: 'problem_confirm'
-      }
-    );
-
     const session = await gateway.getSessionStatus(sessionId, telegramUserId);
     const bothConfirmed = session.participants.every((participant) =>
       problemConfirmed.has(`${sessionId}:${participant.telegramUserId}`)
     );
 
     if (bothConfirmed) {
-      const doneText = ['Обе стороны описали, с чем хотят договориться.', 'Дальше я помогу собрать общую картину.'].join('\n');
+      const doneText = ['Обе стороны подтвердили, с чем хотят договориться.', 'Сейчас я соберу общую картину.'].join('\n');
       for (const participant of session.participants) {
         if (participant.telegramUserId === telegramUserId) {
           await sendReplyWithRetry(
@@ -1259,7 +1250,17 @@ export const buildTelegramBot = (
           );
         }
       }
+      return;
     }
+
+    await sendReplyWithRetry(
+      ctx,
+      ['Ты подтвердил свою формулировку.', 'Ждём второго человека.'].join('\n'),
+      {
+        correlation_id: makeCorrelationId(ctx),
+        action_type: 'problem_confirm'
+      }
+    );
   });
 
   bot.callbackQuery('invite:copy', async (ctx) => {
