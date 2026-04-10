@@ -385,7 +385,7 @@ describe('transport adapters', () => {
     await sendTelegramCommand(setup.bot, 50, 101, '/start');
 
     const last = setup.sentPayloads[setup.sentPayloads.length - 1];
-    expect(last.text).toContain('Выберите действие');
+    expect(last.text).toContain('Что хочешь сделать?');
     expect(last.reply_markup).toBeTruthy();
   });
 
@@ -480,15 +480,15 @@ describe('transport adapters', () => {
 
     await sendTelegramCallback(bot, 60, 101, 'menu:create');
     const creatorReply = replies[replies.length - 1];
-    expect(creatorReply).toContain('Ты создал договорённость');
-    const inviteToken = creatorReply.match(/Токен:\s([A-Za-z0-9_-]+)/)?.[1];
+    expect(creatorReply).toContain('Договорённость создана');
+    const inviteToken = creatorReply.match(/Если ссылка не сработает, отправь этот токен:\n([A-Za-z0-9_-]+)/)?.[1];
     expect(inviteToken).toBeTruthy();
     const session = await sessionRepo.findByInviteTokenHash(mediationService.hashInviteToken(inviteToken!));
     const sessionId = session?.id;
     expect(sessionId).toBeTruthy();
 
     await sendTelegramCommand(bot, 61, 102, `/start join_${inviteToken}`);
-    expect(replies[replies.length - 1]).toContain('Ты присоединился к договорённости');
+    expect(replies[replies.length - 1]).toContain('Ты подключился к договорённости');
 
     await sendTelegramCallback(bot, 62, 101, `consent:${sessionId}`);
     expect(replies[replies.length - 1]).toContain('Ты подтвердил участие');
@@ -590,10 +590,10 @@ describe('transport adapters', () => {
     });
 
     await sendTelegramCallback(bot, 70, 102, 'menu:join');
-    expect(replies[replies.length - 1]).toContain('токен приглашения');
+    expect(replies[replies.length - 1]).toContain('Отправь ссылку-приглашение или токен');
 
     await sendTelegramText(bot, 71, 102, created.inviteToken);
-    expect(replies[replies.length - 1]).toContain('Ты присоединился к договорённости');
+    expect(replies[replies.length - 1]).toContain('Ты подключился к договорённости');
   });
 
   it('deduplicates repeated Telegram delivery by update_id idempotency key', async () => {
@@ -628,7 +628,7 @@ describe('transport adapters', () => {
 
     await sendTelegramCommand(setup.bot, 300, 999, `/select_preferred ${setup.sessionId} BALANCED`);
     const telegramLast = setup.replies[setup.replies.length - 1];
-    expect(telegramLast.toLowerCase()).toContain('not authorized');
+    expect(telegramLast.toLowerCase()).toContain('ты не можешь сделать это сейчас');
 
     const http = await setup.app.inject({
       method: 'POST',
@@ -648,7 +648,7 @@ describe('transport adapters', () => {
 
     await sendTelegramCommand(setup.bot, 400, 101, `/confirm_summary ${setup.sessionId}`);
     const telegramLast = setup.replies[setup.replies.length - 1];
-    expect(telegramLast.toLowerCase()).toContain('not allowed');
+    expect(telegramLast.toLowerCase()).toContain('ты не можешь сделать это сейчас');
 
     const http = await setup.app.inject({
       method: 'POST',
@@ -889,7 +889,7 @@ describe('transport adapters', () => {
     for (let i = 0; i < 12; i += 1) {
       await sendTelegramCommand(setup.bot, 1000 + i, 101, '/unknowncmd');
     }
-    expect(setup.replies[setup.replies.length - 1].toLowerCase()).toContain('rate limit exceeded');
+    expect(setup.replies[setup.replies.length - 1].toLowerCase()).toContain('слишком много запросов');
   });
 
   it('applies correlation ids to HTTP responses and persisted action keys', async () => {

@@ -24,19 +24,19 @@ const codeToStatus: Record<string, number> = {
 };
 
 const codeToTelegramText: Record<string, string> = {
-  INVALID_STATE_TRANSITION: 'Action not allowed in current session state.',
-  TRANSPORT_ACCESS_DENIED: 'You are not authorized for this session.',
-  INTAKE_ACCESS_DENIED: 'You are not authorized for this session.',
-  PARTICIPANT_NOT_IN_SESSION: 'You are not authorized for this session.',
-  SESSION_NOT_FOUND: 'Session not found.',
-  INVALID_INVITE_TOKEN: 'Invite token is invalid.',
-  EXPIRED_INVITE_TOKEN: 'Invite token has expired.',
-  INTAKE_CONFLICT: 'Request already processed or stale version. Please retry from latest state.',
-  NEGOTIATION_CONFLICT: 'Action already processed for the current round.',
-  SUMMARY_MISMATCH: 'Summary confirmation does not match current generated summary.',
-  PROPOSAL_PRECONDITION_FAILED: 'Proposal generation is not available in current state.',
-  NEGOTIATION_PRECONDITION_FAILED: 'Negotiation action is not available in current state.',
-  INTAKE_VALIDATION_ERROR: 'Invalid intake input for this step.'
+  INVALID_STATE_TRANSITION: 'Ты не можешь сделать это сейчас.',
+  TRANSPORT_ACCESS_DENIED: 'Ты не можешь сделать это сейчас.',
+  INTAKE_ACCESS_DENIED: 'Ты не можешь сделать это сейчас.',
+  PARTICIPANT_NOT_IN_SESSION: 'Ты не можешь сделать это сейчас.',
+  SESSION_NOT_FOUND: 'Не получилось найти договорённость.',
+  INVALID_INVITE_TOKEN: 'Приглашение недействительно или устарело.',
+  EXPIRED_INVITE_TOKEN: 'Приглашение недействительно или устарело.',
+  INTAKE_CONFLICT: 'Ты не можешь сделать это сейчас.',
+  NEGOTIATION_CONFLICT: 'Ты не можешь сделать это сейчас.',
+  SUMMARY_MISMATCH: 'Ты не можешь сделать это сейчас.',
+  PROPOSAL_PRECONDITION_FAILED: 'Ты не можешь сделать это сейчас.',
+  NEGOTIATION_PRECONDITION_FAILED: 'Ты не можешь сделать это сейчас.',
+  INTAKE_VALIDATION_ERROR: 'Ты не можешь сделать это сейчас.'
 };
 
 export const mapHttpError = (error: unknown): { status: number; body: { code: string; message: string } } => {
@@ -69,5 +69,5 @@ export const mapTelegramErrorText = (error: unknown): string => {
     return codeToTelegramText[error.code] ?? error.message;
   }
 
-  return 'Unexpected error. Try again later.';
+  return 'Что-то пошло не так. Попробуй ещё раз.';
 };
