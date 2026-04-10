@@ -1,6 +1,6 @@
 # Data Model
 
-## Implemented session tables
+## Core protocol entities
 ### `MediationSession`
 - `id`
 - `state`
@@ -12,19 +12,19 @@
 ### `SessionParticipant`
 - `id`
 - `sessionId`
-- `role` (`PARTY_A`/`PARTY_B`)
+- `role` (`PARTY_A`, `PARTY_B`)
 - `telegramUserId`
 - `consentGrantedAt`
 - timestamps
 
-## Implemented intake tables (Phase 2)
+## Intake entities
 ### `ParticipantIntake`
 - `id`
 - `sessionId`
-- `participantId` (unique)
-- `state` (`NOT_STARTED` / `IN_PROGRESS` / `SUMMARY_PENDING_CONFIRMATION` / `COMPLETED`)
+- `participantId`
+- `state` (`NOT_STARTED`, `IN_PROGRESS`, `SUMMARY_PENDING_CONFIRMATION`, `COMPLETED`)
 - `currentField`
-- `normalizedPositionJson` (confirmed downstream source)
+- `normalizedPositionJson`
 - `generatedSummary`
 - `summaryVersion`
 - `version` (optimistic concurrency)
@@ -37,29 +37,24 @@
 - `rawValue`
 - `normalizedValue`
 - `updatedAt`
-- unique key: (`intakeId`, `field`)
+- unique (`intakeId`, `field`)
 
 ### `IntakeRawMessage`
 - append-only raw participant messages
-- scoped by `intakeId` + `participantId`
+- scoped by `intakeId` and `participantId`
 
 ### `IntakeAssistantQuestion`
-- append-only asked questions
-- scoped by `intakeId` + `participantId`
+- append-only assistant prompts/questions
+- scoped by `intakeId` and `participantId`
 
 ### `IntakeConfirmedSummary`
-- user-confirmed summary text
-- one-to-one with intake
+- one-to-one with `ParticipantIntake`
+- stores user-confirmed summary text
 
-## Separation guarantees
-- Raw messages are persisted separately from normalized model.
-- Only confirmed normalized model + confirmed summary are allowed for downstream synthesis.
-- Repository queries for raw messages require both intake and participant identifiers.
-
-## Implemented synthesis tables (Phase 3)
+## Synthesis entities
 ### `MediationSummary`
 - `id`
-- `caseId` (session id)
+- `caseId`
 - `version` (unique per case)
 - `sharedGoalsJson`
 - `overlappingInterestsJson`
@@ -71,70 +66,62 @@
 - `neutralRepresentationJson`
 - `createdAt`
 
-## Synthesis input constraints (enforced in code)
-- allowed inputs:
-  - confirmed normalized position model (A)
-  - confirmed normalized position model (B)
-- forbidden inputs:
-  - raw messages
-  - assistant question history
-  - unconfirmed/partial intake data
-
-## Implemented proposal tables (Phase 4)
+## Proposal/negotiation entities
 ### `ProposalSet`
 - `id`
-- `caseId` (session id)
+- `caseId`
 - `version` (unique per case)
-- `mediationSummaryVersion` (input summary version)
-- `parentProposalSetVersion` (version lineage)
-- `derivedFromRoundNumber` (traceability)
+- `mediationSummaryVersion`
+- `parentProposalSetVersion`
+- `derivedFromRoundNumber`
 - `createdAt`
 
 ### `ProposalVariant`
 - `id`
 - `proposalSetId`
-- `variantType` (`BALANCED` / `A_LEANING` / `B_LEANING`)
-- `payloadJson` (validated structured payload)
+- `variantType` (`BALANCED`, `A_LEANING`, `B_LEANING`)
+- `payloadJson`
 
-## Proposal input constraints (enforced in code)
-- allowed inputs:
-  - latest persisted `MediationSummary`
-  - session metadata for orchestration/state checks
-- forbidden inputs:
-  - intake raw messages
-  - assistant question history
-  - participant-level normalized model objects
-  - any unconfirmed private artifacts
-
-## Implemented negotiation tables (Phase 5)
 ### `NegotiationRound`
 - `id`
 - `caseId`
-- `roundNumber` (unique per case)
-- `proposalSetVersion` (round snapshot input)
-- `participantActionsJson` (structured action bundles by participant)
-- `status` (`OPEN` / `FINALIZED`)
+- `roundNumber`
+- `proposalSetVersion`
+- `participantActionsJson`
+- `status`
 - `outcome`
-  - `PENDING`
-  - `CONTINUE_WITH_NEW_VERSION`
-  - `CONFLICTING_EDITS`
-  - `AGREEMENT_REACHED`
-  - `PARTIAL_AGREEMENT`
-  - `DEADLOCK`
-  - `ABANDONED`
 - `nextProposalSetVersion`
 - `createdAt`
 - `finalizedAt`
 
-## Negotiation protocol constraints
-- action set is closed:
-  - `ACCEPT`
-  - `REJECT`
-  - `SELECT_PREFERRED`
-  - `SUGGEST_EDIT`
-- `SUGGEST_EDIT` must reference existing `clause_id` and use a structured operation.
-- no free-form rewrite payloads.
-- no mutation of existing `ProposalSet`; each iteration writes a new version.
+## Transport/audit entities (Phase 6)
+### `IdempotencyRecord`
+- `key`
+- `channel` (`TELEGRAM`, `HTTP`)
+- `caseId` (nullable)
+- `participantId` (nullable)
+- `actionType`
+- `payloadHash`
+- `responseJson`
+- `createdAt`
+- index on (`channel`, `caseId`, `participantId`, `actionType`, `payloadHash`, `createdAt`)
 
-## Deferred schema extensions
-- Event/audit stream for all domain commands
+### `ProtocolEvent`
+- `id`
+- `caseId` (nullable)
+- `participantId` (nullable)
+- `actionType`
+- `idempotencyKey`
+- `channel` (`TELEGRAM`, `HTTP`)
+- `outcome` (`ACCEPTED`, `NO_OP`, `ERROR`)
+- `errorCode` (nullable)
+- `sessionState` (nullable)
+- `proposalSetVersion` (nullable)
+- `roundNumber` (nullable)
+- `createdAt`
+
+## Enforced boundaries
+- Synthesis consumes confirmed normalized intake models only.
+- Proposal generation consumes `MediationSummary` only.
+- Negotiation consumes proposal-layer entities only.
+- Transport views do not expose private raw intake artifacts.

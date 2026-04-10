@@ -17,126 +17,85 @@
 - `PARTIAL_AGREEMENT`
 - `DEADLOCK`
 - `ABANDONED`
-- `PROPOSAL_READY` (legacy reserved state, not used in current orchestration)
-- `NEGOTIATION` (legacy reserved state, not used in current orchestration)
-- `AGREEMENT` (legacy reserved state, not used in current orchestration)
 
-## Participant intake states (implemented)
+Legacy reserved enum values still present for compatibility:
+- `PROPOSAL_READY`
+- `NEGOTIATION`
+- `AGREEMENT`
+
+## Participant intake states
 - `NOT_STARTED`
 - `IN_PROGRESS`
 - `SUMMARY_PENDING_CONFIRMATION`
 - `COMPLETED`
 
-## Implemented transitions
-1. `create_session` by Party A
+## Core transitions
+1. `create_session`
 - from: none
 - to: `INVITED`
-- failure: n/a
 
-2. `join_by_invite` by Party B
+2. `join_by_invite`
 - from: `INVITED`
 - to: `CONSENT_PENDING`
-- failures: invalid token, expired token, duplicate participant, invalid state
+- rejects: invalid/expired token, duplicate join, invalid state
 
-3. `grant_consent` by each participant
+3. `grant_consent`
 - from: `CONSENT_PENDING`
-- to: `CONSENT_PENDING` (first consent) or `CONSENTED` (second consent)
-- failures: participant missing, duplicate consent, invalid state
+- to: `CONSENT_PENDING` (first consent) or `CONSENTED` (both consented)
 
-4. `start_or_resume_intake` by participant
-- from session: `CONSENTED`, `SIDE_A_INTAKE`, `SIDE_B_INTAKE`
-- participant intake: `NOT_STARTED` -> `IN_PROGRESS` or `IN_PROGRESS` -> `IN_PROGRESS`
-- failure: participant not in session, invalid session state
+4. `resume_intake`
+- session from: `CONSENTED`, `SIDE_A_INTAKE`, `SIDE_B_INTAKE`
+- intake from: `NOT_STARTED`/`IN_PROGRESS`
+- intake to: `IN_PROGRESS`
 
 5. `submit_intake_field`
-- from participant intake: `IN_PROGRESS` (or edit while `SUMMARY_PENDING_CONFIRMATION`)
-- to participant intake: `IN_PROGRESS` or `SUMMARY_PENDING_CONFIRMATION`
-- failures: field order violation, empty content, stale version conflict, invalid state
+- intake from: `IN_PROGRESS` or `SUMMARY_PENDING_CONFIRMATION` (edit before confirmation)
+- intake to: `IN_PROGRESS` or `SUMMARY_PENDING_CONFIRMATION`
 
-6. `generate_or_regenerate_summary`
-- from participant intake: `IN_PROGRESS` or `SUMMARY_PENDING_CONFIRMATION`
-- to: `SUMMARY_PENDING_CONFIRMATION`
-- guard: all required fields must be present
+6. `confirm_summary`
+- intake from: `SUMMARY_PENDING_CONFIRMATION`
+- intake to: `COMPLETED`
+- guard: exact generated summary match
 
-7. `confirm_summary`
-- from participant intake: `SUMMARY_PENDING_CONFIRMATION`
-- to: `COMPLETED`
-- guard: exact summary match
-- failures: summary mismatch, invalid state
+7. `reopen_intake`
+- intake from: `COMPLETED`
+- intake to: `IN_PROGRESS`
 
-8. `reopen_intake`
-- from participant intake: `COMPLETED`
-- to: `IN_PROGRESS`
-- purpose: allow post-confirmation edits only via explicit action
+8. intake completion impact
+- only A complete -> session `SIDE_B_INTAKE`
+- only B complete -> session `SIDE_A_INTAKE`
+- both complete -> session `READY_FOR_SYNTHESIS`
 
-9. Session intake progression
-- when only Party A completed -> `SIDE_B_INTAKE`
-- when only Party B completed -> `SIDE_A_INTAKE`
-- when both completed -> `READY_FOR_SYNTHESIS`
+9. `run_synthesis`
+- from: `READY_FOR_SYNTHESIS`
+- to: `SYNTHESIS_COMPLETED` then `READY_FOR_PROPOSAL`
+- guard: both participant intakes completed + summaries confirmed
 
-10. `run_synthesis`
-- from session: `READY_FOR_SYNTHESIS`
-- preconditions:
-  - both participant intakes are `COMPLETED`
-  - both confirmed summaries exist
-  - both confirmed normalized models include all required fields
-- output: versioned `MediationSummary`
-- control-flow note: synthesis orchestration is deterministic; LLM (or mapper) is used only for structured mapping, not branching
-
-11. `mark_synthesis_completed`
-- from session: `READY_FOR_SYNTHESIS`
-- to: `SYNTHESIS_COMPLETED`
-- failure: invalid state transition
-
-12. `mark_ready_for_proposal`
-- from session: `SYNTHESIS_COMPLETED`
-- to: `READY_FOR_PROPOSAL`
-- failure: invalid state transition
-
-13. `generate_proposals`
-- from session: `READY_FOR_PROPOSAL`
-- preconditions:
-  - latest `MediationSummary` exists
-  - summary contains all required structured fields
-- output: versioned `ProposalSet` with exactly 3 variants
+10. `generate_proposals`
+- from: `READY_FOR_PROPOSAL`
 - to: `PROPOSALS_GENERATED`
-- failures:
-  - summary missing/incomplete
-  - invalid proposal schema
-  - invalid state transition
+- writes versioned `ProposalSet`
 
-14. `submit_negotiation_actions`
-- from session: `PROPOSALS_GENERATED` or `NEGOTIATION_IN_PROGRESS`
-- first submission in a session moves state to `NEGOTIATION_IN_PROGRESS`
-- strict allowed actions:
-  - `ACCEPT` (variant-level)
-  - `REJECT` (variant-level)
-  - `SELECT_PREFERRED` (variant-level)
-  - `SUGGEST_EDIT` (clause-level structured operations only)
-- each finalized round creates a new `ProposalSet` version unless a terminal outcome is reached by direct accept/reject rule
+11. `submit_negotiation_actions`
+- from: `PROPOSALS_GENERATED` or `NEGOTIATION_IN_PROGRESS`
+- to: `NEGOTIATION_IN_PROGRESS` or terminal states
+- allowed actions only: `ACCEPT`, `REJECT`, `SELECT_PREFERRED`, `SUGGEST_EDIT`
 
-15. `round_resolution_rules` (deterministic)
-- `AGREEMENT_REACHED`:
-  - both participants submit `ACCEPT` for the same variant
-- `PARTIAL_AGREEMENT`:
-  - both align on preferred variant and subset clause convergence is detected while unresolved clauses remain
-- `DEADLOCK`:
-  - both reject all variants in the same round
-  - or conflicting structured edit rounds hit threshold (`3`)
-- `ABANDONED`:
-  - inactivity timeout over open protocol window
+12. terminal outcomes
+- `AGREEMENT_REACHED`: both accept same variant
+- `PARTIAL_AGREEMENT`: subset convergence with unresolved clauses
+- `DEADLOCK`: full rejection or repeated conflicting edit rounds
+- `ABANDONED`: inactivity timeout
 
-16. `version_lineage`
-- every non-terminal negotiation iteration persists a new `ProposalSet` version
-- lineage fields:
-  - `parentProposalSetVersion`
-  - `derivedFromRoundNumber`
-- no in-place mutation of proposal payloads
+## Transport-level protocol rules (Phase 6)
+- Telegram and HTTP do not mutate state directly; they call application services only.
+- Every transport action is wrapped in idempotent execution.
+- Duplicate transport submissions resolve to `NO_OP` with stable response.
+- Unauthorized participant actions are rejected before state transition checks.
+- Every transport-triggered action is persisted as `ProtocolEvent` with outcome and version metadata when available.
 
 ## Invariants
-- Invalid transitions return typed domain errors and do not mutate state.
-- Participant intake is isolated by `(sessionId, participantId)`.
-- Raw participant messages never leave participant scope in intake service APIs.
-- Synthesis service consumes only confirmed normalized models and never reads raw intake messages.
-- Proposal service consumes only `MediationSummary` and never reads raw messages, assistant prompts, or participant intake artifacts.
-- Negotiation service consumes only proposal-layer data (`ProposalSet` + structured actions) and never accesses intake/raw artifacts.
+- Invalid transitions return typed errors and do not mutate state.
+- No cross-session or cross-participant transport access.
+- Raw intake artifacts stay private to owning participant.
+- Synthesis/proposal/negotiation layers do not consume raw intake text.

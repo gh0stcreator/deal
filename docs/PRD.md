@@ -1,60 +1,28 @@
 # Product Requirements (MVP)
 
 ## Goal
-Help two parties resolve conflicts through private structured intake, neutral synthesis, and mediated proposal options.
+Help two participants resolve conflict through private structured intake, neutral synthesis, deterministic proposal variants, and deterministic negotiation rounds.
 
-## Actors
-- Party A
-- Party B
-- System mediator (Ladno)
+## Core constraints
+- Two parties only.
+- Telegram-first.
+- No raw cross-party message exposure.
+- State machine driven progression.
+- Deterministic control flow; LLM usage limited to mapping/normalization tasks.
 
-## Core principles
-- Private by default.
-- Structured mediation over free-form chat.
-- Neutral framing and de-escalation.
-- Deterministic state machine controls progression.
+## Implemented now (through Phase 6)
+- Session/invite/join flow.
+- Dual explicit consent.
+- Resumable private intake with mandatory summary confirmation.
+- Deterministic synthesis from confirmed normalized models only.
+- Deterministic proposal generation from versioned `MediationSummary` only.
+- Deterministic negotiation protocol with strict action set and terminal outcomes.
+- Telegram command transport mapped 1:1 to application services.
+- HTTP adapter parity for same protocol actions.
+- Transport idempotency and protocol audit event persistence.
 
-## Implemented now
-- Session creation
-- Invite/join
-- Explicit consent capture
-- Deterministic resumable private intake engine per participant
-- Mandatory summary confirmation gate before intake completion
-- Deterministic synthesis layer using only confirmed normalized models
-- Deterministic proposal generation layer consuming only versioned `MediationSummary`
-- Deterministic negotiation protocol layer on top of `ProposalSet`
-- Structured synthesis output:
-  - shared_goals
-  - overlapping_interests
-  - conflicting_points
-  - constraints_matrix
-  - non_negotiables_conflicts
-  - potential_agreement_zones
-  - risk_areas
-- Structured proposal output per variant:
-  - title
-  - summary
-  - clauses[] (`clause_id`, `topic`, `clause_text`, `rationale`, `tradeoff_notes`)
-  - unresolved_points[]
-  - risk_notes[]
-  - review_window
-  - fallback_if_broken
-- Exactly three variants:
-  - BALANCED
-  - A_LEANING
-  - B_LEANING
-- Negotiation action protocol (strict set):
-  - ACCEPT (variant-level)
-  - REJECT (variant-level)
-  - SELECT_PREFERRED (variant-level)
-  - SUGGEST_EDIT (clause-level structured edit only)
-- Deterministic resolution outcomes:
-  - AGREEMENT_REACHED (both accept same variant)
-  - PARTIAL_AGREEMENT (subset converges, unresolved points remain)
-  - DEADLOCK (full rejection or repeated conflicting edits)
-  - ABANDONED (inactivity timeout)
-
-## Current intake fields
+## Structured data fields
+### Intake fields
 - facts
 - interpretations
 - interests
@@ -64,6 +32,25 @@ Help two parties resolve conflicts through private structured intake, neutral sy
 - acceptable_concessions
 - non_negotiables
 
+### Synthesis fields
+- shared_goals
+- overlapping_interests
+- conflicting_points
+- constraints_matrix
+- non_negotiables_conflicts
+- potential_agreement_zones
+- risk_areas
+
+### Proposal variant fields
+- title
+- summary
+- clauses (`clause_id`, `topic`, `clause_text`, `rationale`, `tradeoff_notes`)
+- unresolved_points
+- risk_notes
+- review_window
+- fallback_if_broken
+
 ## Deferred
-- Telegram command handlers for negotiation actions
-- reminder/notification delivery
+- Reminder/notification strategy.
+- Rich conversational UX.
+- Advanced analytics/admin tooling.

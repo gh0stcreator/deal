@@ -2,28 +2,26 @@
 
 ## Implemented
 - [x] Session creation
-- [x] Invite token generation
+- [x] Invite token generation + expiry
 - [x] Second-party join by token
-- [x] Invalid token handling
+- [x] Invalid token / expired token handling
 - [x] Duplicate join handling
-- [x] Dual explicit consent
+- [x] Explicit dual consent
 - [x] Deterministic participant intake state machine
 - [x] Summary confirmation gate + resumable intake
 - [x] Deterministic synthesis from confirmed normalized models only
 - [x] Versioned mediation summaries
 - [x] Deterministic proposal generation from mediation summary only
-- [x] Versioned proposal sets with 3 variants (balanced/A-leaning/B-leaning)
-- [x] Proposal schema/invariant validation
-- [x] Deterministic negotiation round protocol
-- [x] Structured participant actions (accept/reject/select/suggest_edit)
-- [x] Clause-level structured edit validation
-- [x] Proposal version lineage across negotiation rounds
-- [x] Deterministic terminal outcomes (agreement/partial/deadlock/abandoned)
-- [x] State machine scaffold with explicit progression
-- [x] Fastify + grammY bootstrap
-- [x] Prisma schema + migration
-- [x] Unit + integration tests
+- [x] Versioned proposal sets with 3 variants
+- [x] Deterministic negotiation rounds + outcomes
+- [x] Clause-level structured edit protocol
+- [x] Telegram command transport for protocol actions
+- [x] HTTP parity endpoints for protocol actions
+- [x] Transport idempotency handling
+- [x] Protocol audit/event persistence
+- [x] Unit + integration tests including transport idempotency/privacy wiring
 
-## Deferred (explicit TODO)
-- [ ] Telegram negotiation command handlers
+## Deferred
 - [ ] Reminder/notification workflow
+- [ ] Rich conversational UX
+- [ ] Analytics/admin dashboard
