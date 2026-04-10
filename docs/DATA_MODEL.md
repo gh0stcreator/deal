@@ -43,6 +43,7 @@
 ### `IntakeRawMessage`
 - append-only raw participant messages
 - scoped by `intakeId` and `participantId`
+- includes private synthesis-clarification notes (`[problem_synthesis_clarification] ...`) used only in participant scope
 
 ### `IntakeAssistantQuestion`
 - append-only assistant prompts/questions

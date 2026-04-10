@@ -29,6 +29,29 @@ import { AppLogger, createNoopLogger } from '../ports/AppLogger.js';
 
 const RETRY_WINDOW_MS = 20_000;
 
+const synthesisThemes: Array<{ label: string; keywords: RegExp[] }> = [
+  {
+    label: 'сроки и темп',
+    keywords: [/срок/i, /дедлайн/i, /время/i, /быстр/i, /затян/i]
+  },
+  {
+    label: 'деньги и условия оплаты',
+    keywords: [/оплат/i, /деньг/i, /бюджет/i, /стоим/i, /сумм/i]
+  },
+  {
+    label: 'формат работы и роли',
+    keywords: [/формат/i, /роль/i, /обязан/i, /ответствен/i, /задач/i]
+  },
+  {
+    label: 'границы и уважительное общение',
+    keywords: [/границ/i, /тон/i, /уваж/i, /общен/i, /конфликт/i]
+  },
+  {
+    label: 'качество и ожидаемый результат',
+    keywords: [/качеств/i, /результат/i, /ожидан/i, /итог/i]
+  }
+];
+
 export interface ActionExecutionContext {
   correlation_id: string | null;
   channel: TransportChannel;
@@ -43,6 +66,12 @@ interface ActionExecutionMeta {
   session_state: SessionState | null;
   proposal_set_version: number | null;
   round_number: number | null;
+}
+
+export interface ProblemSynthesisView {
+  focus: string;
+  shared_points: string;
+  divergence: string;
 }
 
 export class ProtocolGatewayService {
@@ -181,6 +210,53 @@ export class ProtocolGatewayService {
       });
 
       return { recorded_text: text };
+    });
+  }
+
+  async buildProblemSynthesis(
+    ctx: ActionExecutionContext,
+    sessionId: string,
+    telegramUserId: string
+  ): Promise<ProblemSynthesisView> {
+    return this.executeIdempotent(ctx, async () => {
+      const session = await this.requireParticipant(sessionId, telegramUserId);
+      if (session.participants.length !== 2) {
+        throw new IntakeValidationError('Synthesis requires two participants.');
+      }
+
+      const statements: string[] = [];
+      for (const participant of session.participants) {
+        const privateData = await this.intakeService.getPrivateIntakeData(
+          sessionId,
+          participant.telegramUserId
+        );
+        const statement =
+          privateData.view.fields[ProtocolGatewayService.PROBLEM_STATEMENT_FIELD].rawValue?.trim() ??
+          '';
+        if (!statement) {
+          throw new IntakeValidationError('Synthesis requires confirmed problem statements from both participants.');
+        }
+        statements.push(statement);
+      }
+
+      return buildNeutralProblemSynthesis(statements[0], statements[1]);
+    });
+  }
+
+  async submitProblemSynthesisClarification(
+    ctx: ActionExecutionContext,
+    sessionId: string,
+    telegramUserId: string,
+    clarification: string
+  ): Promise<{ saved: true }> {
+    return this.executeIdempotent(ctx, async () => {
+      await this.requireParticipant(sessionId, telegramUserId);
+      await this.intakeService.savePrivateProblemClarification(
+        sessionId,
+        telegramUserId,
+        clarification
+      );
+      return { saved: true };
     });
   }
 
@@ -527,3 +603,54 @@ export class ProtocolGatewayService {
     return createHash('sha256').update(JSON.stringify(payload ?? {})).digest('hex');
   }
 }
+
+const extractSynthesisThemes = (statement: string): string[] => {
+  const normalized = statement.toLowerCase();
+  const found = synthesisThemes
+    .filter((theme) => theme.keywords.some((pattern) => pattern.test(normalized)))
+    .map((theme) => theme.label);
+
+  if (found.length > 0) {
+    return found;
+  }
+
+  return ['условия взаимодействия и итоговые договорённости'];
+};
+
+const asHumanList = (values: string[]): string =>
+  values.length <= 1
+    ? values[0] ?? ''
+    : `${values.slice(0, -1).join(', ')} и ${values[values.length - 1]}`;
+
+const buildNeutralProblemSynthesis = (
+  participantAStatement: string,
+  participantBStatement: string
+): ProblemSynthesisView => {
+  const aThemes = new Set(extractSynthesisThemes(participantAStatement));
+  const bThemes = new Set(extractSynthesisThemes(participantBStatement));
+
+  const union = [...new Set([...aThemes, ...bThemes])];
+  const shared = union.filter((theme) => aThemes.has(theme) && bThemes.has(theme));
+  const onlyA = union.filter((theme) => aThemes.has(theme) && !bThemes.has(theme));
+  const onlyB = union.filter((theme) => bThemes.has(theme) && !aThemes.has(theme));
+
+  const focus = `согласовать ${asHumanList(union)}.`;
+  const sharedPoints =
+    shared.length > 0
+      ? `обе стороны отмечают важность: ${asHumanList(shared)}.`
+      : 'обе стороны хотят снизить напряжение и зафиксировать понятные правила.';
+
+  let divergence = 'пока различаются акценты по деталям и приоритетам.';
+  if (onlyA.length > 0 && onlyB.length > 0) {
+    divergence = `есть разные акценты: часть ожиданий про ${asHumanList(onlyA)}, а часть — про ${asHumanList(onlyB)}.`;
+  } else if (onlyA.length > 0 || onlyB.length > 0) {
+    const unique = onlyA.length > 0 ? onlyA : onlyB;
+    divergence = `нужно отдельно согласовать ожидания по теме: ${asHumanList(unique)}.`;
+  }
+
+  return {
+    focus,
+    shared_points: sharedPoints,
+    divergence
+  };
+};

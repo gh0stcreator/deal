@@ -1,7 +1,10 @@
 import { Bot, Context, InlineKeyboard } from 'grammy';
 import { SystemClock } from '../../application/ports/Clock.js';
 import { AppLogger, createNoopLogger } from '../../application/ports/AppLogger.js';
-import { ProtocolGatewayService } from '../../application/services/ProtocolGatewayService.js';
+import {
+  ProblemSynthesisView,
+  ProtocolGatewayService
+} from '../../application/services/ProtocolGatewayService.js';
 import { SuggestEditOperations } from '../../domain/negotiation/types.js';
 import { ProposalVariantTypes } from '../../domain/proposal/types.js';
 import { SessionStates } from '../../domain/session/types.js';
@@ -163,7 +166,9 @@ export const buildTelegramBot = (
     options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const pendingInput = new Map<string, PendingInputKind>();
   const pendingProblemSession = new Map<string, string>();
+  const pendingSynthesisClarificationSession = new Map<string, string>();
   const problemConfirmed = new Set<string>();
+  const problemSynthesisSent = new Set<string>();
   const lastSessionByUser = new Map<string, string>();
   const lastInviteByUser = new Map<string, { deepLink: string | null; token: string }>();
 
@@ -357,6 +362,24 @@ export const buildTelegramBot = (
       .text('Да, верно', `problem:confirm:${sessionId}`)
       .row()
       .text('Хочу поправить', `problem:edit:${sessionId}`);
+
+  const synthesisFeedbackKeyboard = (sessionId: string) =>
+    new InlineKeyboard()
+      .text('Это похоже на правду', `synthesis:ok:${sessionId}`)
+      .row()
+      .text('Нет, нужно уточнить', `synthesis:clarify:${sessionId}`);
+
+  const renderProblemSynthesis = (view: ProblemSynthesisView): string =>
+    [
+      'Похоже, вы хотите договориться вот о чём:',
+      view.focus,
+      '',
+      'Общее между вашими позициями:',
+      view.shared_points,
+      '',
+      'Где пока есть расхождение:',
+      view.divergence
+    ].join('\n');
 
   const describeSessionForUser = async (
     ctx: Context,
@@ -594,6 +617,7 @@ export const buildTelegramBot = (
 
       if (result.state === SessionStates.CONSENTED) {
         const session = await gateway.getSessionStatus(sessionId, telegramUserId);
+        problemSynthesisSent.delete(sessionId);
         for (const participant of session.participants) {
           problemConfirmed.delete(`${sessionId}:${participant.telegramUserId}`);
           if (participant.telegramUserId === telegramUserId) {
@@ -1207,6 +1231,7 @@ export const buildTelegramBot = (
     const telegramUserId = userIdFromCtx(ctx);
     pendingProblemSession.set(telegramUserId, sessionId);
     problemConfirmed.delete(`${sessionId}:${telegramUserId}`);
+    problemSynthesisSent.delete(sessionId);
     await sendReplyWithRetry(
       ctx,
       'Отправь исправленный вариант.',
@@ -1222,31 +1247,60 @@ export const buildTelegramBot = (
     const sessionId = ctx.match[1];
     const telegramUserId = userIdFromCtx(ctx);
     problemConfirmed.add(`${sessionId}:${telegramUserId}`);
+
+    if (problemSynthesisSent.has(sessionId)) {
+      await sendReplyWithRetry(
+        ctx,
+        'Ты уже подтвердил свою формулировку.',
+        {
+          correlation_id: makeCorrelationId(ctx),
+          action_type: 'problem_confirm'
+        }
+      );
+      return;
+    }
+
     const session = await gateway.getSessionStatus(sessionId, telegramUserId);
     const bothConfirmed = session.participants.every((participant) =>
       problemConfirmed.has(`${sessionId}:${participant.telegramUserId}`)
     );
 
     if (bothConfirmed) {
-      const doneText = ['Обе стороны подтвердили, с чем хотят договориться.', 'Сейчас я соберу общую картину.'].join('\n');
+      const synthesis = await gateway.buildProblemSynthesis(
+        {
+          correlation_id: makeCorrelationId(ctx),
+          channel: 'TELEGRAM',
+          idempotency_key: makeKey(ctx, 'problem_synthesis'),
+          action_type: 'problem_synthesis',
+          case_id: sessionId,
+          participant_id: telegramUserId,
+          payload: { session_id: sessionId }
+        },
+        sessionId,
+        telegramUserId
+      );
+      const synthesisText = renderProblemSynthesis(synthesis);
+      problemSynthesisSent.add(sessionId);
       for (const participant of session.participants) {
         if (participant.telegramUserId === telegramUserId) {
           await sendReplyWithRetry(
             ctx,
-            doneText,
+            synthesisText,
             {
               correlation_id: makeCorrelationId(ctx),
               action_type: 'problem_both_confirmed'
-            }
+            },
+            { reply_markup: synthesisFeedbackKeyboard(sessionId) }
           );
         } else {
           await sendDirectWithRetry(
             participant.telegramUserId,
-            doneText,
+            synthesisText,
             {
               correlation_id: `tg:problem:${sessionId}:${participant.telegramUserId}`,
               action_type: 'problem_both_confirmed'
-            }
+            },
+            { reply_markup: synthesisFeedbackKeyboard(sessionId) }
           );
         }
       }
@@ -1259,6 +1313,33 @@ export const buildTelegramBot = (
       {
         correlation_id: makeCorrelationId(ctx),
         action_type: 'problem_confirm'
+      }
+    );
+  });
+
+  bot.callbackQuery(/^synthesis:ok:([A-Za-z0-9_-]{3,})$/, async (ctx) => {
+    await safeAnswerCallback(ctx);
+    await sendReplyWithRetry(
+      ctx,
+      'Спасибо. Зафиксировал.',
+      {
+        correlation_id: makeCorrelationId(ctx),
+        action_type: 'synthesis_ack'
+      }
+    );
+  });
+
+  bot.callbackQuery(/^synthesis:clarify:([A-Za-z0-9_-]{3,})$/, async (ctx) => {
+    await safeAnswerCallback(ctx);
+    const sessionId = ctx.match[1];
+    const telegramUserId = userIdFromCtx(ctx);
+    pendingSynthesisClarificationSession.set(telegramUserId, sessionId);
+    await sendReplyWithRetry(
+      ctx,
+      'Что именно я понял не так?',
+      {
+        correlation_id: makeCorrelationId(ctx),
+        action_type: 'synthesis_clarify_prompt'
       }
     );
   });
@@ -1305,6 +1386,59 @@ export const buildTelegramBot = (
     }
 
     const telegramUserId = userIdFromCtx(ctx);
+    const pendingClarificationForSession = pendingSynthesisClarificationSession.get(telegramUserId);
+    if (pendingClarificationForSession) {
+      const input = text.trim();
+      if (!input) {
+        await sendReplyWithRetry(
+          ctx,
+          'Что именно я понял не так?',
+          {
+            correlation_id: makeCorrelationId(ctx),
+            action_type: 'synthesis_clarify'
+          }
+        );
+        return;
+      }
+
+      try {
+        await gateway.submitProblemSynthesisClarification(
+          {
+            correlation_id: makeCorrelationId(ctx),
+            channel: 'TELEGRAM',
+            idempotency_key: makeKey(ctx, 'synthesis_clarify'),
+            action_type: 'synthesis_clarify',
+            case_id: pendingClarificationForSession,
+            participant_id: telegramUserId,
+            payload: { session_id: pendingClarificationForSession, text: input }
+          },
+          pendingClarificationForSession,
+          telegramUserId,
+          input
+        );
+        pendingSynthesisClarificationSession.delete(telegramUserId);
+        await sendReplyWithRetry(
+          ctx,
+          'Принял уточнение. Сохранил отдельно.',
+          {
+            correlation_id: makeCorrelationId(ctx),
+            action_type: 'synthesis_clarify'
+          }
+        );
+        return;
+      } catch (error) {
+        await sendReplyWithRetry(
+          ctx,
+          mapTelegramErrorText(error),
+          {
+            correlation_id: makeCorrelationId(ctx),
+            action_type: 'synthesis_clarify'
+          }
+        );
+        return;
+      }
+    }
+
     const pendingProblemForSession = pendingProblemSession.get(telegramUserId);
     if (pendingProblemForSession) {
       const input = text.trim();
@@ -1336,6 +1470,7 @@ export const buildTelegramBot = (
           input
         );
         problemConfirmed.delete(`${pendingProblemForSession}:${telegramUserId}`);
+        problemSynthesisSent.delete(pendingProblemForSession);
         await sendReplyWithRetry(
           ctx,
           ['Я записал это так:', result.recorded_text, 'Всё верно?'].join('\n'),

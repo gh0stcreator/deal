@@ -239,6 +239,28 @@ export class IntakeService {
     };
   }
 
+  async savePrivateProblemClarification(
+    sessionId: string,
+    telegramUserId: string,
+    clarification: string
+  ): Promise<void> {
+    const { participant } = await this.requireParticipant(sessionId, telegramUserId);
+    const intake = await this.requireIntake(participant.id);
+    const content = clarification.trim();
+    if (!content) {
+      throw new IntakeValidationError('Problem clarification cannot be empty.');
+    }
+
+    await this.intakeRepository.saveRawMessage({
+      id: this.idGenerator.nextId(),
+      intakeId: intake.id,
+      participantId: participant.id,
+      field: 'facts',
+      content: `[problem_synthesis_clarification] ${content}`,
+      createdAt: this.clock.now()
+    });
+  }
+
   private async requireParticipant(
     sessionId: string,
     telegramUserId: string

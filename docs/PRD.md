@@ -26,6 +26,10 @@ Help two participants resolve conflict through private structured intake, neutra
   - outbound Telegram retry/backoff for transient send failures
   - concurrency and replay-focused transport tests
   - Postgres runtime integration test suite (env-gated)
+- Minimal post-consent shared picture step:
+  - built only from both confirmed participant problem statements
+  - shared neutral 3-block synthesis text for both sides
+  - private clarification capture (`Нет, нужно уточнить`) without auto re-synthesis
 
 ## Structured data fields
 ### Intake fields

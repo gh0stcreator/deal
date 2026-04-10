@@ -462,9 +462,15 @@ describe('transport adapters', () => {
     };
 
     const replies: string[] = [];
+    const sentPayloads: Array<{ text: string; reply_markup?: unknown }> = [];
     bot.api.config.use(async (prev, method, payload, signal) => {
       if (method === 'sendMessage') {
-        replies.push((payload as { text?: string }).text ?? '');
+        const text = (payload as { text?: string }).text ?? '';
+        replies.push(text);
+        sentPayloads.push({
+          text,
+          reply_markup: (payload as { reply_markup?: unknown }).reply_markup
+        });
         return {
           ok: true,
           result: {
@@ -512,14 +518,35 @@ describe('transport adapters', () => {
     await sendTelegramText(bot, 68, 102, 'Нужно договориться о формате и дедлайнах');
     expect(replies[replies.length - 1]).toContain('Я записал это так:');
     await sendTelegramCallback(bot, 69, 102, `problem:confirm:${sessionId}`);
+    expect(replies.filter((entry) => entry.includes('Похоже, вы хотите договориться вот о чём:')).length).toBeGreaterThanOrEqual(2);
+    expect(replies.filter((entry) => entry.includes('Общее между вашими позициями:')).length).toBeGreaterThanOrEqual(2);
+    expect(replies.filter((entry) => entry.includes('Где пока есть расхождение:')).length).toBeGreaterThanOrEqual(2);
+    const lastPayload = sentPayloads[sentPayloads.length - 1];
+    expect(lastPayload.reply_markup).toBeTruthy();
 
     const partyAData = await intakeService.getPrivateIntakeData(sessionId!, '101');
     const partyBData = await intakeService.getPrivateIntakeData(sessionId!, '102');
     expect(partyAData.view.fields.facts.rawValue).toContain('дедлайнах и оплате');
     expect(partyBData.view.fields.facts.rawValue).toContain('формате и дедлайнах');
     expect(partyAData.view.fields.facts.rawValue).not.toBe(partyBData.view.fields.facts.rawValue);
-    expect(replies.filter((entry) => entry.includes('Обе стороны подтвердили, с чем хотят договориться.')).length).toBeGreaterThanOrEqual(2);
-    expect(replies.filter((entry) => entry.includes('Сейчас я соберу общую картину.')).length).toBeGreaterThanOrEqual(2);
+
+    await sendTelegramCallback(bot, 70, 101, `synthesis:clarify:${sessionId}`);
+    expect(replies[replies.length - 1]).toContain('Что именно я понял не так?');
+    await sendTelegramText(bot, 71, 101, 'Нужно добавить, что важен способ коммуникации');
+    expect(replies[replies.length - 1]).toContain('Принял уточнение. Сохранил отдельно.');
+
+    const partyADataAfterClarification = await intakeService.getPrivateIntakeData(sessionId!, '101');
+    const partyBDataAfterClarification = await intakeService.getPrivateIntakeData(sessionId!, '102');
+    expect(
+      partyADataAfterClarification.rawMessages.some((entry) =>
+        entry.content.includes('[problem_synthesis_clarification]')
+      )
+    ).toBe(true);
+    expect(
+      partyBDataAfterClarification.rawMessages.some((entry) =>
+        entry.content.includes('[problem_synthesis_clarification]')
+      )
+    ).toBe(false);
 
     const finalSession = await gateway.getSessionStatus(sessionId!, '101');
     expect(finalSession.state).toBe(SessionStates.SIDE_A_INTAKE);
