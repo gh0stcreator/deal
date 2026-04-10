@@ -22,6 +22,7 @@ Help two parties resolve conflicts through private structured intake, neutral sy
 - Mandatory summary confirmation gate before intake completion
 - Deterministic synthesis layer using only confirmed normalized models
 - Deterministic proposal generation layer consuming only versioned `MediationSummary`
+- Deterministic negotiation protocol layer on top of `ProposalSet`
 - Structured synthesis output:
   - shared_goals
   - overlapping_interests
@@ -42,6 +43,16 @@ Help two parties resolve conflicts through private structured intake, neutral sy
   - BALANCED
   - A_LEANING
   - B_LEANING
+- Negotiation action protocol (strict set):
+  - ACCEPT (variant-level)
+  - REJECT (variant-level)
+  - SELECT_PREFERRED (variant-level)
+  - SUGGEST_EDIT (clause-level structured edit only)
+- Deterministic resolution outcomes:
+  - AGREEMENT_REACHED (both accept same variant)
+  - PARTIAL_AGREEMENT (subset converges, unresolved points remain)
+  - DEADLOCK (full rejection or repeated conflicting edits)
+  - ABANDONED (inactivity timeout)
 
 ## Current intake fields
 - facts
@@ -54,4 +65,5 @@ Help two parties resolve conflicts through private structured intake, neutral sy
 - non_negotiables
 
 ## Deferred
-- negotiation loop and final outcomes automation
+- Telegram command handlers for negotiation actions
+- reminder/notification delivery

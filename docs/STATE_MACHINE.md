@@ -12,12 +12,14 @@
 - `SYNTHESIS_COMPLETED`
 - `READY_FOR_PROPOSAL`
 - `PROPOSALS_GENERATED`
-- `PROPOSAL_READY` (legacy reserved state, not used in current orchestration)
-- `NEGOTIATION`
-- `AGREEMENT`
+- `NEGOTIATION_IN_PROGRESS`
+- `AGREEMENT_REACHED`
 - `PARTIAL_AGREEMENT`
 - `DEADLOCK`
 - `ABANDONED`
+- `PROPOSAL_READY` (legacy reserved state, not used in current orchestration)
+- `NEGOTIATION` (legacy reserved state, not used in current orchestration)
+- `AGREEMENT` (legacy reserved state, not used in current orchestration)
 
 ## Participant intake states (implemented)
 - `NOT_STARTED`
@@ -103,9 +105,38 @@
   - invalid proposal schema
   - invalid state transition
 
+14. `submit_negotiation_actions`
+- from session: `PROPOSALS_GENERATED` or `NEGOTIATION_IN_PROGRESS`
+- first submission in a session moves state to `NEGOTIATION_IN_PROGRESS`
+- strict allowed actions:
+  - `ACCEPT` (variant-level)
+  - `REJECT` (variant-level)
+  - `SELECT_PREFERRED` (variant-level)
+  - `SUGGEST_EDIT` (clause-level structured operations only)
+- each finalized round creates a new `ProposalSet` version unless a terminal outcome is reached by direct accept/reject rule
+
+15. `round_resolution_rules` (deterministic)
+- `AGREEMENT_REACHED`:
+  - both participants submit `ACCEPT` for the same variant
+- `PARTIAL_AGREEMENT`:
+  - both align on preferred variant and subset clause convergence is detected while unresolved clauses remain
+- `DEADLOCK`:
+  - both reject all variants in the same round
+  - or conflicting structured edit rounds hit threshold (`3`)
+- `ABANDONED`:
+  - inactivity timeout over open protocol window
+
+16. `version_lineage`
+- every non-terminal negotiation iteration persists a new `ProposalSet` version
+- lineage fields:
+  - `parentProposalSetVersion`
+  - `derivedFromRoundNumber`
+- no in-place mutation of proposal payloads
+
 ## Invariants
 - Invalid transitions return typed domain errors and do not mutate state.
 - Participant intake is isolated by `(sessionId, participantId)`.
 - Raw participant messages never leave participant scope in intake service APIs.
 - Synthesis service consumes only confirmed normalized models and never reads raw intake messages.
 - Proposal service consumes only `MediationSummary` and never reads raw messages, assistant prompts, or participant intake artifacts.
+- Negotiation service consumes only proposal-layer data (`ProposalSet` + structured actions) and never accesses intake/raw artifacts.

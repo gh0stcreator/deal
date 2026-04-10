@@ -86,6 +86,8 @@
 - `caseId` (session id)
 - `version` (unique per case)
 - `mediationSummaryVersion` (input summary version)
+- `parentProposalSetVersion` (version lineage)
+- `derivedFromRoundNumber` (traceability)
 - `createdAt`
 
 ### `ProposalVariant`
@@ -104,6 +106,35 @@
   - participant-level normalized model objects
   - any unconfirmed private artifacts
 
+## Implemented negotiation tables (Phase 5)
+### `NegotiationRound`
+- `id`
+- `caseId`
+- `roundNumber` (unique per case)
+- `proposalSetVersion` (round snapshot input)
+- `participantActionsJson` (structured action bundles by participant)
+- `status` (`OPEN` / `FINALIZED`)
+- `outcome`
+  - `PENDING`
+  - `CONTINUE_WITH_NEW_VERSION`
+  - `CONFLICTING_EDITS`
+  - `AGREEMENT_REACHED`
+  - `PARTIAL_AGREEMENT`
+  - `DEADLOCK`
+  - `ABANDONED`
+- `nextProposalSetVersion`
+- `createdAt`
+- `finalizedAt`
+
+## Negotiation protocol constraints
+- action set is closed:
+  - `ACCEPT`
+  - `REJECT`
+  - `SELECT_PREFERRED`
+  - `SUGGEST_EDIT`
+- `SUGGEST_EDIT` must reference existing `clause_id` and use a structured operation.
+- no free-form rewrite payloads.
+- no mutation of existing `ProposalSet`; each iteration writes a new version.
+
 ## Deferred schema extensions
-- Proposal rounds / participant decisions
 - Event/audit stream for all domain commands
