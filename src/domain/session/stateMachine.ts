@@ -13,6 +13,7 @@ import {
 } from './types.js';
 
 const TERMINAL_STATES: ReadonlySet<SessionState> = new Set([
+  SessionStates.AGREEMENT_REACHED,
   SessionStates.AGREEMENT,
   SessionStates.PARTIAL_AGREEMENT,
   SessionStates.DEADLOCK,
@@ -170,6 +171,97 @@ export const markProposalsGenerated = (
   return {
     ...session,
     state: SessionStates.PROPOSALS_GENERATED,
+    updatedAt: now
+  };
+};
+
+export const markNegotiationInProgress = (
+  session: MediationSession,
+  now: Date
+): MediationSession => {
+  if (
+    session.state !== SessionStates.PROPOSALS_GENERATED &&
+    session.state !== SessionStates.NEGOTIATION_IN_PROGRESS
+  ) {
+    throw new InvalidStateTransitionError(
+      `Cannot mark negotiation in progress from state ${session.state}.`
+    );
+  }
+
+  return {
+    ...session,
+    state: SessionStates.NEGOTIATION_IN_PROGRESS,
+    updatedAt: now
+  };
+};
+
+export const markAgreementReached = (
+  session: MediationSession,
+  now: Date
+): MediationSession => {
+  if (session.state !== SessionStates.NEGOTIATION_IN_PROGRESS) {
+    throw new InvalidStateTransitionError(
+      `Cannot mark agreement reached from state ${session.state}.`
+    );
+  }
+
+  return {
+    ...session,
+    state: SessionStates.AGREEMENT_REACHED,
+    updatedAt: now
+  };
+};
+
+export const markPartialAgreement = (
+  session: MediationSession,
+  now: Date
+): MediationSession => {
+  if (session.state !== SessionStates.NEGOTIATION_IN_PROGRESS) {
+    throw new InvalidStateTransitionError(
+      `Cannot mark partial agreement from state ${session.state}.`
+    );
+  }
+
+  return {
+    ...session,
+    state: SessionStates.PARTIAL_AGREEMENT,
+    updatedAt: now
+  };
+};
+
+export const markDeadlock = (
+  session: MediationSession,
+  now: Date
+): MediationSession => {
+  if (session.state !== SessionStates.NEGOTIATION_IN_PROGRESS) {
+    throw new InvalidStateTransitionError(
+      `Cannot mark deadlock from state ${session.state}.`
+    );
+  }
+
+  return {
+    ...session,
+    state: SessionStates.DEADLOCK,
+    updatedAt: now
+  };
+};
+
+export const markAbandoned = (
+  session: MediationSession,
+  now: Date
+): MediationSession => {
+  if (
+    session.state !== SessionStates.PROPOSALS_GENERATED &&
+    session.state !== SessionStates.NEGOTIATION_IN_PROGRESS
+  ) {
+    throw new InvalidStateTransitionError(
+      `Cannot mark abandoned from state ${session.state}.`
+    );
+  }
+
+  return {
+    ...session,
+    state: SessionStates.ABANDONED,
     updatedAt: now
   };
 };

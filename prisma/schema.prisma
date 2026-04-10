@@ -19,6 +19,8 @@ enum SessionState {
   SYNTHESIS_COMPLETED
   READY_FOR_PROPOSAL
   PROPOSALS_GENERATED
+  NEGOTIATION_IN_PROGRESS
+  AGREEMENT_REACHED
   PROPOSAL_READY
   NEGOTIATION
   AGREEMENT
@@ -56,6 +58,28 @@ enum ProposalVariantType {
   B_LEANING
 }
 
+enum NegotiationActionType {
+  ACCEPT
+  REJECT
+  SUGGEST_EDIT
+  SELECT_PREFERRED
+}
+
+enum NegotiationRoundStatus {
+  OPEN
+  FINALIZED
+}
+
+enum NegotiationRoundOutcome {
+  PENDING
+  CONTINUE_WITH_NEW_VERSION
+  CONFLICTING_EDITS
+  AGREEMENT_REACHED
+  PARTIAL_AGREEMENT
+  DEADLOCK
+  ABANDONED
+}
+
 model MediationSession {
   id                String                @id @default(cuid())
   state             SessionState
@@ -66,6 +90,7 @@ model MediationSession {
   participants      SessionParticipant[]
   summaries         MediationSummary[]
   proposalSets      ProposalSet[]
+  negotiationRounds NegotiationRound[]
 }
 
 model SessionParticipant {
@@ -180,6 +205,8 @@ model ProposalSet {
   caseId                   String
   version                  Int
   mediationSummaryVersion  Int
+  parentProposalSetVersion Int?
+  derivedFromRoundNumber   Int?
   createdAt                DateTime          @default(now())
 
   session                  MediationSession  @relation(fields: [caseId], references: [id], onDelete: Cascade)
@@ -198,4 +225,22 @@ model ProposalVariant {
   proposalSet    ProposalSet        @relation(fields: [proposalSetId], references: [id], onDelete: Cascade)
 
   @@unique([proposalSetId, variantType])
+}
+
+model NegotiationRound {
+  id                   String                 @id
+  caseId               String
+  roundNumber          Int
+  proposalSetVersion   Int
+  participantActionsJson Json
+  status               NegotiationRoundStatus @default(OPEN)
+  outcome              NegotiationRoundOutcome @default(PENDING)
+  nextProposalSetVersion Int?
+  createdAt            DateTime               @default(now())
+  finalizedAt          DateTime?
+
+  session              MediationSession       @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@unique([caseId, roundNumber])
+  @@index([caseId])
 }

@@ -65,6 +65,8 @@ export class ProposalGenerationService {
       case_id: sessionId,
       version: latestSet ? latestSet.version + 1 : 1,
       mediation_summary_version: summary.version,
+      parent_proposal_set_version: latestSet?.version ?? null,
+      derived_from_round_number: null,
       created_at: this.clock.now(),
       variants
     };

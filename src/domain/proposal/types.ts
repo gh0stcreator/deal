@@ -38,6 +38,8 @@ export interface ProposalSet {
   case_id: string;
   version: number;
   mediation_summary_version: number;
+  parent_proposal_set_version: number | null;
+  derived_from_round_number: number | null;
   created_at: Date;
   variants: ProposalVariant[];
 }

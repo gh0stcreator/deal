@@ -28,18 +28,17 @@ export class PrismaProposalSetRepository implements ProposalSetRepository {
       return null;
     }
 
-    return {
-      id: set.id,
-      case_id: set.caseId,
-      version: set.version,
-      mediation_summary_version: set.mediationSummaryVersion,
-      created_at: set.createdAt,
-      variants: set.variants
-        .sort((a, b) => a.variantType.localeCompare(b.variantType))
-        .map((variant) =>
-          this.mapPayload(variant.payloadJson as Prisma.JsonObject, variant.variantType)
-        )
-    };
+    return this.mapSet(set);
+  }
+
+  async listByCaseId(caseId: string): Promise<ProposalSet[]> {
+    const sets = await this.prisma.proposalSet.findMany({
+      where: { caseId },
+      orderBy: { version: 'asc' },
+      include: { variants: true }
+    });
+
+    return sets.map((set) => this.mapSet(set));
   }
 
   async save(proposalSet: ProposalSet): Promise<void> {
@@ -50,6 +49,8 @@ export class PrismaProposalSetRepository implements ProposalSetRepository {
           caseId: proposalSet.case_id,
           version: proposalSet.version,
           mediationSummaryVersion: proposalSet.mediation_summary_version,
+          parentProposalSetVersion: proposalSet.parent_proposal_set_version,
+          derivedFromRoundNumber: proposalSet.derived_from_round_number,
           createdAt: proposalSet.created_at
         }
       });
@@ -70,6 +71,32 @@ export class PrismaProposalSetRepository implements ProposalSetRepository {
     return {
       ...mapped,
       variant_type: variantType as ProposalVariantType
+    };
+  }
+
+  private mapSet(set: {
+    id: string;
+    caseId: string;
+    version: number;
+    mediationSummaryVersion: number;
+    parentProposalSetVersion: number | null;
+    derivedFromRoundNumber: number | null;
+    createdAt: Date;
+    variants: Array<{ variantType: string; payloadJson: Prisma.JsonValue }>;
+  }): ProposalSet {
+    return {
+      id: set.id,
+      case_id: set.caseId,
+      version: set.version,
+      mediation_summary_version: set.mediationSummaryVersion,
+      parent_proposal_set_version: set.parentProposalSetVersion,
+      derived_from_round_number: set.derivedFromRoundNumber,
+      created_at: set.createdAt,
+      variants: set.variants
+        .sort((a, b) => a.variantType.localeCompare(b.variantType))
+        .map((variant) =>
+          this.mapPayload(variant.payloadJson as Prisma.JsonObject, variant.variantType)
+        )
     };
   }
 }

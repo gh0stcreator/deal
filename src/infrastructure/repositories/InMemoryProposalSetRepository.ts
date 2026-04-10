@@ -13,6 +13,11 @@ export class InMemoryProposalSetRepository implements ProposalSetRepository {
     return structuredClone(values[values.length - 1]);
   }
 
+  async listByCaseId(caseId: string): Promise<ProposalSet[]> {
+    const values = this.sets.get(caseId) ?? [];
+    return structuredClone(values).sort((a, b) => a.version - b.version);
+  }
+
   async save(proposalSet: ProposalSet): Promise<void> {
     const values = this.sets.get(proposalSet.case_id) ?? [];
     values.push(structuredClone(proposalSet));
