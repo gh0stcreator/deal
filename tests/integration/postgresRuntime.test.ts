@@ -36,12 +36,12 @@ const intakeAnswers = {
 } as const;
 
 describePostgres('postgres runtime integration', () => {
-  let prisma: PrismaClient;
+  let prisma: PrismaClient | null = null;
   let gateway: ProtocolGatewayService;
   let intakeService: IntakeService;
   let synthesisService: SynthesisService;
   let proposalService: ProposalGenerationService;
-  let app: ReturnType<typeof buildHttpServer>;
+  let app: ReturnType<typeof buildHttpServer> | null = null;
 
   beforeAll(async () => {
     execSync('corepack pnpm prisma migrate deploy', {
@@ -116,6 +116,10 @@ describePostgres('postgres runtime integration', () => {
   });
 
   beforeEach(async () => {
+    if (!prisma) {
+      return;
+    }
+
     await prisma.protocolEvent.deleteMany();
     await prisma.idempotencyRecord.deleteMany();
     await prisma.negotiationRound.deleteMany();
@@ -132,8 +136,12 @@ describePostgres('postgres runtime integration', () => {
   });
 
   afterAll(async () => {
-    await app.close();
-    await prisma.$disconnect();
+    if (app) {
+      await app.close();
+    }
+    if (prisma) {
+      await prisma.$disconnect();
+    }
   });
 
   const completeIntake = async (sessionId: string, telegramUserId: string) => {
@@ -324,4 +332,3 @@ describePostgres('postgres runtime integration', () => {
     expect(rounds.length).toBeGreaterThan(0);
   });
 });
-

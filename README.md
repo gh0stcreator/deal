@@ -86,3 +86,4 @@ Predictable reset workflow (local/dev DB):
 - [`docs/API_SPEC.md`](./docs/API_SPEC.md)
 - [`docs/VISIBILITY_MATRIX.md`](./docs/VISIBILITY_MATRIX.md)
 - [`docs/OPS_NOTES.md`](./docs/OPS_NOTES.md)
+- [`docs/LOCAL_RUNTIME_RUNBOOK.md`](./docs/LOCAL_RUNTIME_RUNBOOK.md)
