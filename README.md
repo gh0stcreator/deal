@@ -5,7 +5,7 @@ Telegram-first AI mediation backend for structured two-party conflict resolution
 ## What this is
 - Not a generic chatbot.
 - A deterministic mediation workflow engine with Telegram transport adapters.
-- Current implementation covers Foundation + Session/Invite/Join/Consent + deterministic private intake + structured synthesis (Phase 3 baseline).
+- Current implementation covers Foundation + Session/Invite/Join/Consent + deterministic private intake + structured synthesis + deterministic proposal generation (Phase 4 baseline).
 
 ## Stack
 - TypeScript (Node.js)
@@ -27,14 +27,17 @@ Telegram-first AI mediation backend for structured two-party conflict resolution
 - Summary generation + explicit confirmation gate.
 - Privacy-preserving synthesis service using only confirmed normalized models.
 - Versioned `MediationSummary` persistence with fixed structured schema.
+- Deterministic proposal generation from `MediationSummary` only.
+- Versioned `ProposalSet` with exactly 3 variants (`BALANCED`, `A_LEANING`, `B_LEANING`).
+- Proposal validation checks (schema completeness, contradiction guardrails, fallback requirements).
 - Prisma schema + initial SQL migration.
 - Fastify health + session create endpoint.
 - grammY command bootstrap (`/start_mediation`, `/join`, `/consent`).
-- Unit + integration tests for Phase 1 critical paths.
+- Unit + integration tests for critical Phase 1-4 paths.
 
 ## Not implemented yet
-- Proposal generation and negotiation loop.
-- Terminal outcome resolution automation.
+- Participant accept/reject/edit proposal loop.
+- Negotiation rounds and terminal outcome automation.
 
 ## Local setup
 1. Copy env file:

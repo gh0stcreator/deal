@@ -21,6 +21,7 @@ Help two parties resolve conflicts through private structured intake, neutral sy
 - Deterministic resumable private intake engine per participant
 - Mandatory summary confirmation gate before intake completion
 - Deterministic synthesis layer using only confirmed normalized models
+- Deterministic proposal generation layer consuming only versioned `MediationSummary`
 - Structured synthesis output:
   - shared_goals
   - overlapping_interests
@@ -29,6 +30,18 @@ Help two parties resolve conflicts through private structured intake, neutral sy
   - non_negotiables_conflicts
   - potential_agreement_zones
   - risk_areas
+- Structured proposal output per variant:
+  - title
+  - summary
+  - clauses[] (`clause_id`, `topic`, `clause_text`, `rationale`, `tradeoff_notes`)
+  - unresolved_points[]
+  - risk_notes[]
+  - review_window
+  - fallback_if_broken
+- Exactly three variants:
+  - BALANCED
+  - A_LEANING
+  - B_LEANING
 
 ## Current intake fields
 - facts
@@ -41,5 +54,4 @@ Help two parties resolve conflicts through private structured intake, neutral sy
 - non_negotiables
 
 ## Deferred
-- proposal generation
 - negotiation loop and final outcomes automation

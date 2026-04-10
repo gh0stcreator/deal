@@ -80,6 +80,30 @@
   - assistant question history
   - unconfirmed/partial intake data
 
+## Implemented proposal tables (Phase 4)
+### `ProposalSet`
+- `id`
+- `caseId` (session id)
+- `version` (unique per case)
+- `mediationSummaryVersion` (input summary version)
+- `createdAt`
+
+### `ProposalVariant`
+- `id`
+- `proposalSetId`
+- `variantType` (`BALANCED` / `A_LEANING` / `B_LEANING`)
+- `payloadJson` (validated structured payload)
+
+## Proposal input constraints (enforced in code)
+- allowed inputs:
+  - latest persisted `MediationSummary`
+  - session metadata for orchestration/state checks
+- forbidden inputs:
+  - intake raw messages
+  - assistant question history
+  - participant-level normalized model objects
+  - any unconfirmed private artifacts
+
 ## Deferred schema extensions
-- Proposal rounds / proposal decisions
+- Proposal rounds / participant decisions
 - Event/audit stream for all domain commands

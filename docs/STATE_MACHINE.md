@@ -9,7 +9,10 @@
 - `SIDE_A_INTAKE`
 - `SIDE_B_INTAKE`
 - `READY_FOR_SYNTHESIS`
-- `PROPOSAL_READY`
+- `SYNTHESIS_COMPLETED`
+- `READY_FOR_PROPOSAL`
+- `PROPOSALS_GENERATED`
+- `PROPOSAL_READY` (legacy reserved state, not used in current orchestration)
 - `NEGOTIATION`
 - `AGREEMENT`
 - `PARTIAL_AGREEMENT`
@@ -78,8 +81,31 @@
 - output: versioned `MediationSummary`
 - control-flow note: synthesis orchestration is deterministic; LLM (or mapper) is used only for structured mapping, not branching
 
+11. `mark_synthesis_completed`
+- from session: `READY_FOR_SYNTHESIS`
+- to: `SYNTHESIS_COMPLETED`
+- failure: invalid state transition
+
+12. `mark_ready_for_proposal`
+- from session: `SYNTHESIS_COMPLETED`
+- to: `READY_FOR_PROPOSAL`
+- failure: invalid state transition
+
+13. `generate_proposals`
+- from session: `READY_FOR_PROPOSAL`
+- preconditions:
+  - latest `MediationSummary` exists
+  - summary contains all required structured fields
+- output: versioned `ProposalSet` with exactly 3 variants
+- to: `PROPOSALS_GENERATED`
+- failures:
+  - summary missing/incomplete
+  - invalid proposal schema
+  - invalid state transition
+
 ## Invariants
 - Invalid transitions return typed domain errors and do not mutate state.
 - Participant intake is isolated by `(sessionId, participantId)`.
 - Raw participant messages never leave participant scope in intake service APIs.
 - Synthesis service consumes only confirmed normalized models and never reads raw intake messages.
+- Proposal service consumes only `MediationSummary` and never reads raw messages, assistant prompts, or participant intake artifacts.
