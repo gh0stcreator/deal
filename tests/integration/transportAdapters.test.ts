@@ -498,13 +498,26 @@ describe('transport adapters', () => {
     expect(replies[replies.length - 1]).toContain('С чем хотите договориться? Опиши коротко');
 
     await sendTelegramText(bot, 64, 101, 'Хотим договориться о сроках и оплате');
-    await sendTelegramText(bot, 65, 102, 'Нужно договориться о формате и дедлайнах');
+    expect(replies[replies.length - 1]).toContain('Я записал это так:');
+    expect(replies[replies.length - 1]).toContain('Всё верно?');
+
+    await sendTelegramCallback(bot, 65, 101, `problem:edit:${sessionId}`);
+    expect(replies[replies.length - 1]).toContain('Отправь исправленный вариант.');
+    await sendTelegramText(bot, 66, 101, 'Хотим договориться о дедлайнах и оплате');
+    expect(replies[replies.length - 1]).toContain('Я записал это так:');
+    await sendTelegramCallback(bot, 67, 101, `problem:confirm:${sessionId}`);
+    expect(replies[replies.length - 1]).toContain('Принял.');
+
+    await sendTelegramText(bot, 68, 102, 'Нужно договориться о формате и дедлайнах');
+    expect(replies[replies.length - 1]).toContain('Я записал это так:');
+    await sendTelegramCallback(bot, 69, 102, `problem:confirm:${sessionId}`);
 
     const partyAData = await intakeService.getPrivateIntakeData(sessionId!, '101');
     const partyBData = await intakeService.getPrivateIntakeData(sessionId!, '102');
-    expect(partyAData.view.fields.facts.rawValue).toContain('сроках и оплате');
+    expect(partyAData.view.fields.facts.rawValue).toContain('дедлайнах и оплате');
     expect(partyBData.view.fields.facts.rawValue).toContain('формате и дедлайнах');
     expect(partyAData.view.fields.facts.rawValue).not.toBe(partyBData.view.fields.facts.rawValue);
+    expect(replies.filter((entry) => entry.includes('Обе стороны описали, с чем хотят договориться.')).length).toBeGreaterThanOrEqual(2);
 
     const finalSession = await gateway.getSessionStatus(sessionId!, '101');
     expect(finalSession.state).toBe(SessionStates.SIDE_A_INTAKE);

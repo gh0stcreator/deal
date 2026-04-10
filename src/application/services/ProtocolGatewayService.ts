@@ -156,25 +156,24 @@ export class ProtocolGatewayService {
     sessionId: string,
     telegramUserId: string,
     description: string
-  ): Promise<{ recorded: boolean; already_recorded: boolean }> {
+  ): Promise<{ recorded_text: string }> {
     return this.executeIdempotent(ctx, async () => {
       await this.requireParticipant(sessionId, telegramUserId);
       const intake = await this.intakeService.startOrResume(sessionId, telegramUserId);
-
-      const existing = intake.fields.facts.rawValue?.trim();
-      if (existing) {
-        return { recorded: false, already_recorded: true };
+      const text = description.trim();
+      if (!text) {
+        throw new IntakeValidationError('Problem description cannot be empty.');
       }
 
       await this.intakeService.submitFieldAnswer({
         sessionId,
         telegramUserId,
         field: 'facts',
-        rawValue: description,
+        rawValue: text,
         expectedVersion: intake.version
       });
 
-      return { recorded: true, already_recorded: false };
+      return { recorded_text: text };
     });
   }
 

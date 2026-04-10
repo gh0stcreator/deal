@@ -163,6 +163,7 @@ export const buildTelegramBot = (
     options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const pendingInput = new Map<string, PendingInputKind>();
   const pendingProblemSession = new Map<string, string>();
+  const problemConfirmed = new Set<string>();
   const lastSessionByUser = new Map<string, string>();
   const lastInviteByUser = new Map<string, { deepLink: string | null; token: string }>();
 
@@ -350,6 +351,12 @@ export const buildTelegramBot = (
       }
     );
   };
+
+  const problemConfirmationKeyboard = (sessionId: string) =>
+    new InlineKeyboard()
+      .text('Да, верно', `problem:confirm:${sessionId}`)
+      .row()
+      .text('Хочу поправить', `problem:edit:${sessionId}`);
 
   const describeSessionForUser = async (
     ctx: Context,
@@ -588,6 +595,7 @@ export const buildTelegramBot = (
       if (result.state === SessionStates.CONSENTED) {
         const session = await gateway.getSessionStatus(sessionId, telegramUserId);
         for (const participant of session.participants) {
+          problemConfirmed.delete(`${sessionId}:${participant.telegramUserId}`);
           if (participant.telegramUserId === telegramUserId) {
             await askProblemDefinition(participant.telegramUserId, sessionId, 'current', ctx);
           } else {
@@ -1193,6 +1201,67 @@ export const buildTelegramBot = (
     await giveConsentFlow(ctx, ctx.match[1], userIdFromCtx(ctx), 'give_consent_button');
   });
 
+  bot.callbackQuery(/^problem:edit:([A-Za-z0-9_-]{3,})$/, async (ctx) => {
+    await safeAnswerCallback(ctx);
+    const sessionId = ctx.match[1];
+    const telegramUserId = userIdFromCtx(ctx);
+    pendingProblemSession.set(telegramUserId, sessionId);
+    problemConfirmed.delete(`${sessionId}:${telegramUserId}`);
+    await sendReplyWithRetry(
+      ctx,
+      'Отправь исправленный вариант.',
+      {
+        correlation_id: makeCorrelationId(ctx),
+        action_type: 'problem_edit_prompt'
+      }
+    );
+  });
+
+  bot.callbackQuery(/^problem:confirm:([A-Za-z0-9_-]{3,})$/, async (ctx) => {
+    await safeAnswerCallback(ctx);
+    const sessionId = ctx.match[1];
+    const telegramUserId = userIdFromCtx(ctx);
+    problemConfirmed.add(`${sessionId}:${telegramUserId}`);
+    await sendReplyWithRetry(
+      ctx,
+      'Принял.',
+      {
+        correlation_id: makeCorrelationId(ctx),
+        action_type: 'problem_confirm'
+      }
+    );
+
+    const session = await gateway.getSessionStatus(sessionId, telegramUserId);
+    const bothConfirmed = session.participants.every((participant) =>
+      problemConfirmed.has(`${sessionId}:${participant.telegramUserId}`)
+    );
+
+    if (bothConfirmed) {
+      const doneText = ['Обе стороны описали, с чем хотят договориться.', 'Дальше я помогу собрать общую картину.'].join('\n');
+      for (const participant of session.participants) {
+        if (participant.telegramUserId === telegramUserId) {
+          await sendReplyWithRetry(
+            ctx,
+            doneText,
+            {
+              correlation_id: makeCorrelationId(ctx),
+              action_type: 'problem_both_confirmed'
+            }
+          );
+        } else {
+          await sendDirectWithRetry(
+            participant.telegramUserId,
+            doneText,
+            {
+              correlation_id: `tg:problem:${sessionId}:${participant.telegramUserId}`,
+              action_type: 'problem_both_confirmed'
+            }
+          );
+        }
+      }
+    }
+  });
+
   bot.callbackQuery('invite:copy', async (ctx) => {
     await safeAnswerCallback(ctx);
     const telegramUserId = userIdFromCtx(ctx);
@@ -1265,26 +1334,16 @@ export const buildTelegramBot = (
           telegramUserId,
           input
         );
-
-        if (result.already_recorded) {
-          await sendReplyWithRetry(
-            ctx,
-            'Ты уже отправил описание. Ждём второго человека.',
-            {
-              correlation_id: makeCorrelationId(ctx),
-              action_type: 'problem_definition'
-            }
-          );
-        } else {
-          await sendReplyWithRetry(
-            ctx,
-            'Принял. Сохранил твоё описание.',
-            {
-              correlation_id: makeCorrelationId(ctx),
-              action_type: 'problem_definition'
-            }
-          );
-        }
+        problemConfirmed.delete(`${pendingProblemForSession}:${telegramUserId}`);
+        await sendReplyWithRetry(
+          ctx,
+          ['Я записал это так:', result.recorded_text, 'Всё верно?'].join('\n'),
+          {
+            correlation_id: makeCorrelationId(ctx),
+            action_type: 'problem_definition'
+          },
+          { reply_markup: problemConfirmationKeyboard(pendingProblemForSession) }
+        );
         pendingProblemSession.delete(telegramUserId);
         return;
       } catch (error) {
