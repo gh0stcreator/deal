@@ -480,24 +480,24 @@ describe('transport adapters', () => {
 
     await sendTelegramCallback(bot, 60, 101, 'menu:create');
     const creatorReply = replies[replies.length - 1];
-    expect(creatorReply).toContain('Токен приглашения');
-    const inviteToken = creatorReply.match(/Токен приглашения:\s([A-Za-z0-9_-]+)/)?.[1];
-    const sessionId = creatorReply.match(/session:\s([A-Za-z0-9_-]+)/)?.[1];
+    expect(creatorReply).toContain('Ты создал договорённость');
+    const inviteToken = creatorReply.match(/Токен:\s([A-Za-z0-9_-]+)/)?.[1];
     expect(inviteToken).toBeTruthy();
+    const session = await sessionRepo.findByInviteTokenHash(mediationService.hashInviteToken(inviteToken!));
+    const sessionId = session?.id;
     expect(sessionId).toBeTruthy();
 
     await sendTelegramCommand(bot, 61, 102, `/start join_${inviteToken}`);
-    expect(replies[replies.length - 1]).toContain('Вы присоединились к договорённости');
+    expect(replies[replies.length - 1]).toContain('Ты присоединился к договорённости');
 
     await sendTelegramCallback(bot, 62, 101, `consent:${sessionId}`);
-    expect(replies[replies.length - 1]).toContain('Готово: участие подтверждено');
-    expect(replies[replies.length - 1]).toContain('CONSENT_PENDING');
+    expect(replies[replies.length - 1]).toContain('Ты подтвердил участие');
 
     await sendTelegramCallback(bot, 63, 102, `consent:${sessionId}`);
-    expect(replies[replies.length - 1]).toContain('CONSENTED');
+    expect(replies[replies.length - 1]).toContain('Готово. Вы оба подтвердили участие');
 
-    const session = await gateway.getSessionStatus(sessionId!, '101');
-    expect(session.state).toBe(SessionStates.CONSENTED);
+    const finalSession = await gateway.getSessionStatus(sessionId!, '101');
+    expect(finalSession.state).toBe(SessionStates.CONSENTED);
   });
 
   it('supports guided join via menu and plain token message', async () => {
@@ -593,7 +593,7 @@ describe('transport adapters', () => {
     expect(replies[replies.length - 1]).toContain('токен приглашения');
 
     await sendTelegramText(bot, 71, 102, created.inviteToken);
-    expect(replies[replies.length - 1]).toContain('Вы присоединились к договорённости');
+    expect(replies[replies.length - 1]).toContain('Ты присоединился к договорённости');
   });
 
   it('deduplicates repeated Telegram delivery by update_id idempotency key', async () => {

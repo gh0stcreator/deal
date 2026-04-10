@@ -10,8 +10,7 @@ import { InMemoryRateLimiter } from '../transport/rateLimiter.js';
 import {
   mapIntakeStatusView,
   mapNegotiationRoundStatusView,
-  mapProposalListView,
-  mapSessionStatusView
+  mapProposalListView
 } from '../transport/viewMappers.js';
 
 const RATE_LIMIT_WINDOW_MS = 60_000;
@@ -40,14 +39,6 @@ const makeKey = (ctx: Context, actionType: string): string =>
 
 const variantValues = Object.values(ProposalVariantTypes);
 const operationValues = Object.values(SuggestEditOperations);
-
-const renderSession = (session: ReturnType<typeof mapSessionStatusView>) =>
-  [
-    `session: ${session.session_id}`,
-    `state: ${session.state}`,
-    `participants: ${session.participant_count}/2`,
-    `consents: ${session.consent_count}/2`
-  ].join('\n');
 
 const renderIntake = (view: ReturnType<typeof mapIntakeStatusView>) =>
   [
@@ -83,13 +74,13 @@ const startKeyboard = () =>
     .row()
     .text('Присоединиться по приглашению', 'menu:join')
     .row()
-    .text('Посмотреть мой статус', 'menu:status');
+    .text('Посмотреть статус', 'menu:status');
 
 const consentKeyboard = (sessionId: string) =>
   new InlineKeyboard()
     .text('Подтвердить участие', `consent:${sessionId}`)
     .row()
-    .text('Показать статус', `status:${sessionId}`);
+    .text('Посмотреть статус', `status:${sessionId}`);
 
 const extractInviteToken = (value: string): string | null => {
   const trimmed = value.trim();
@@ -177,6 +168,7 @@ export const buildTelegramBot = (
     options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const pendingInput = new Map<string, PendingInputKind>();
   const lastSessionByUser = new Map<string, string>();
+  const lastInviteByUser = new Map<string, { deepLink: string | null; token: string }>();
 
   const bot = new Bot(token);
 
@@ -301,25 +293,34 @@ export const buildTelegramBot = (
     try {
       const session = await gateway.getSessionStatus(sessionId, telegramUserId);
       lastSessionByUser.set(telegramUserId, sessionId);
-      const view = mapSessionStatusView(session);
       const self = session.participants.find((participant) => participant.telegramUserId === telegramUserId);
       const consentPending =
         session.state === SessionStates.CONSENT_PENDING && self && !self.consentGrantedAt;
+      const consentCount = session.participants.filter((participant) => Boolean(participant.consentGrantedAt)).length;
 
-      const nextStep =
-        session.state === SessionStates.INVITED
-          ? 'Следующий шаг: пригласите вторую сторону по ссылке.'
-          : session.state === SessionStates.CONSENT_PENDING && consentPending
-            ? 'Следующий шаг: подтвердите участие.'
-            : session.state === SessionStates.CONSENT_PENDING
-              ? 'Ожидаем подтверждение от второй стороны.'
-              : session.state === SessionStates.CONSENTED
-                ? 'Обе стороны подтвердили участие. Можно продолжать медиацию.'
-                : 'Статус обновлён.';
+      const statusLines = ['Статус договорённости:'];
+      if (session.participants.length === 2) {
+        statusLines.push('Обе стороны подключены.');
+      } else {
+        statusLines.push('Пока подключена одна сторона.');
+      }
+
+      if (consentCount === 2) {
+        statusLines.push('Обе стороны подтвердили участие.');
+        statusLines.push('Можно двигаться дальше.');
+      } else if (self?.consentGrantedAt) {
+        statusLines.push('Ты подтвердил участие.');
+        statusLines.push('Ожидаем подтверждения от второй стороны.');
+      } else if (consentPending) {
+        statusLines.push('Ты ещё не подтвердил участие.');
+        statusLines.push('Следующий шаг: нажми «Подтвердить участие».');
+      } else {
+        statusLines.push('Следующий шаг: дождись подключения второго участника.');
+      }
 
       await sendReplyWithRetry(
         ctx,
-        [`Статус сессии:`, renderSession(view), nextStep].join('\n'),
+        statusLines.join('\n'),
         {
           correlation_id: makeCorrelationId(ctx),
           action_type: 'session_status'
@@ -371,10 +372,9 @@ export const buildTelegramBot = (
       await sendReplyWithRetry(
         ctx,
         [
-          'Вы присоединились к договорённости.',
-          `session: ${result.session_id}`,
-          `state: ${result.state}`,
-          'Следующий шаг: подтвердите участие.'
+          'Ты присоединился к договорённости.',
+          'Теперь вам обоим нужно подтвердить участие.',
+          'Следующий шаг: нажми «Подтвердить участие».'
         ].join('\n'),
         {
           correlation_id: correlationId,
@@ -421,22 +421,24 @@ export const buildTelegramBot = (
       const deepLink = username
         ? `https://t.me/${username}?start=join_${result.invite_token}`
         : null;
+      lastInviteByUser.set(telegramUserId, { deepLink, token: result.invite_token });
 
       const keyboard = new InlineKeyboard()
-        .text('Проверить статус', `status:${result.session_id}`)
+        .text('Посмотреть статус', `status:${result.session_id}`)
         .row()
         .text('Подтвердить участие', `consent:${result.session_id}`);
       if (deepLink) {
-        keyboard.row().url('Ссылка для приглашения', deepLink);
+        keyboard.row().url('Открыть ссылку', deepLink);
       }
+      keyboard.row().text('Скопировать приглашение', 'invite:copy');
 
       const text = [
-        'Готово. Я создал новую договорённость.',
-        'Отправьте приглашение второй стороне:',
-        deepLink ? `Ссылка: ${deepLink}` : 'Ссылка недоступна. Отправьте токен ниже.',
-        `Токен приглашения: ${result.invite_token}`,
-        `session: ${result.session_id}`,
-        'После подключения второй стороны подтвердите участие кнопкой.'
+        'Ты создал договорённость.',
+        'Отправь приглашение второму человеку — после этого вы оба сможете подтвердить участие.',
+        deepLink ? `Приглашение: ${deepLink}` : 'Приглашение: ссылка недоступна в этом чате.',
+        'Если не работает ссылка, отправь токен ниже.',
+        `Токен: ${result.invite_token}`,
+        'Следующий шаг: дождись подключения второй стороны и нажми «Подтвердить участие».'
       ].join('\n');
 
       await sendReplyWithRetry(
@@ -480,16 +482,14 @@ export const buildTelegramBot = (
         telegramUserId
       );
       lastSessionByUser.set(telegramUserId, sessionId);
-      const session = await gateway.getSessionStatus(sessionId, telegramUserId);
-      const view = mapSessionStatusView(session);
-      const nextStep =
+      const feedback =
         result.state === SessionStates.CONSENTED
-          ? 'Обе стороны подтвердили участие.'
-          : 'Ваше участие подтверждено. Ждём вторую сторону.';
+          ? 'Готово. Вы оба подтвердили участие. Можно двигаться дальше.'
+          : ['Ты подтвердил участие.', 'Ждём второго человека.'].join('\n');
 
       await sendReplyWithRetry(
         ctx,
-        [`Готово: участие подтверждено.`, renderSession(view), nextStep].join('\n'),
+        feedback,
         {
           correlation_id: correlationId,
           action_type: actionType
@@ -1044,7 +1044,7 @@ export const buildTelegramBot = (
       pendingInput.set(telegramUserId, 'JOIN_TOKEN');
       await sendReplyWithRetry(
         ctx,
-        'Отправьте токен приглашения или ссылку-приглашение сюда.',
+        'Отправь токен приглашения или ссылку-приглашение сюда.',
         {
           correlation_id: makeCorrelationId(ctx),
           action_type: 'join_prompt'
@@ -1060,12 +1060,12 @@ export const buildTelegramBot = (
     }
 
     pendingInput.set(telegramUserId, 'STATUS_SESSION_ID');
-    await sendReplyWithRetry(
-      ctx,
-      'Отправьте session id, чтобы показать статус.',
-      {
-        correlation_id: makeCorrelationId(ctx),
-        action_type: 'status_prompt'
+      await sendReplyWithRetry(
+        ctx,
+        'Отправь session id, чтобы показать статус.',
+        {
+          correlation_id: makeCorrelationId(ctx),
+          action_type: 'status_prompt'
       }
     );
   });
@@ -1073,6 +1073,32 @@ export const buildTelegramBot = (
   bot.callbackQuery(/^consent:([A-Za-z0-9_-]{3,})$/, async (ctx) => {
     await safeAnswerCallback(ctx);
     await giveConsentFlow(ctx, ctx.match[1], userIdFromCtx(ctx), 'give_consent_button');
+  });
+
+  bot.callbackQuery('invite:copy', async (ctx) => {
+    await safeAnswerCallback(ctx);
+    const telegramUserId = userIdFromCtx(ctx);
+    const invite = lastInviteByUser.get(telegramUserId);
+    if (!invite) {
+      await sendReplyWithRetry(ctx, 'Сначала создай договорённость, чтобы получить приглашение.', {
+        correlation_id: makeCorrelationId(ctx),
+        action_type: 'invite_copy'
+      });
+      return;
+    }
+
+    await sendReplyWithRetry(
+      ctx,
+      [
+        invite.deepLink ? `Ссылка: ${invite.deepLink}` : 'Ссылка недоступна в этом чате.',
+        'Если не работает ссылка, отправь этот токен:',
+        invite.token
+      ].join('\n'),
+      {
+        correlation_id: makeCorrelationId(ctx),
+        action_type: 'invite_copy'
+      }
+    );
   });
 
   bot.callbackQuery(/^status:([A-Za-z0-9_-]{3,})$/, async (ctx) => {
