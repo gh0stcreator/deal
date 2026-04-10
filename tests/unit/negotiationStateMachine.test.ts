@@ -17,6 +17,7 @@ const baseSession = (state: keyof typeof SessionStates | (typeof SessionStates)[
   state: typeof state === 'string' ? state : SessionStates.CREATED,
   inviteTokenHash: 'hash',
   inviteTokenExpiresAt: new Date('2026-01-12T00:00:00.000Z'),
+  problemTopic: null,
   participants: [
     {
       id: 's-1:PARTY_A',

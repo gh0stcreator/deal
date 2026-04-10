@@ -25,12 +25,14 @@ export const createSessionAggregate = (
   inviteTokenHash: string,
   inviteTokenExpiresAt: Date,
   partyATelegramUserId: string,
+  problemTopic: string | null,
   now: Date
 ): MediationSession => ({
   id,
   state: SessionStates.INVITED,
   inviteTokenHash,
   inviteTokenExpiresAt,
+  problemTopic,
   participants: [
     {
       id: `${id}:${ParticipantRoles.PARTY_A}`,

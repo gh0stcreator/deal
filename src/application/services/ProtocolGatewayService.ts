@@ -137,10 +137,13 @@ export class ProtocolGatewayService {
 
   async createSession(
     ctx: ActionExecutionContext,
-    telegramUserId: string
+    telegramUserId: string,
+    problemTopic?: string
   ): Promise<{ session_id: string; invite_token: string; state: string }> {
     return this.executeIdempotent(ctx, async () => {
-      const created = await this.mediationService.createSession(telegramUserId);
+      const created = problemTopic
+        ? await this.mediationService.createSessionWithTopic(telegramUserId, problemTopic)
+        : await this.mediationService.createSession(telegramUserId);
       return {
         session_id: created.session.id,
         invite_token: created.inviteToken,

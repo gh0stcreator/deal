@@ -101,6 +101,7 @@ model MediationSession {
   state             SessionState
   inviteTokenHash   String                @unique
   inviteTokenExpiresAt DateTime
+  problemTopic      String?
   createdAt         DateTime              @default(now())
   updatedAt         DateTime              @updatedAt
   participants      SessionParticipant[]

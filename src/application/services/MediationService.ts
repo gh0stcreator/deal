@@ -13,6 +13,7 @@ import {
   SessionNotFoundError
 } from '../../domain/session/errors.js';
 import { MediationSession } from '../../domain/session/types.js';
+import { IntakeValidationError } from '../../domain/intake/errors.js';
 
 export interface SessionCreatedResult {
   session: MediationSession;
@@ -38,6 +39,33 @@ export class MediationService {
       tokenHash,
       new Date(now.getTime() + MediationService.INVITE_EXPIRY_MS),
       partyATelegramUserId,
+      null,
+      now
+    );
+
+    await this.sessionRepository.save(session);
+
+    return {
+      session,
+      inviteToken
+    };
+  }
+
+  async createSessionWithTopic(
+    partyATelegramUserId: string,
+    problemTopic: string
+  ): Promise<SessionCreatedResult> {
+    const topic = normalizeProblemTopic(problemTopic);
+    const now = this.clock.now();
+    const inviteToken = this.generateInviteToken();
+    const tokenHash = this.hashInviteToken(inviteToken);
+
+    const session = createSessionAggregate(
+      this.idGenerator.nextId(),
+      tokenHash,
+      new Date(now.getTime() + MediationService.INVITE_EXPIRY_MS),
+      partyATelegramUserId,
+      topic,
       now
     );
 
@@ -89,3 +117,14 @@ export class MediationService {
     return randomBytes(18).toString('base64url');
   }
 }
+
+const normalizeProblemTopic = (value: string): string => {
+  const plain = value.replace(/\s+/g, ' ').trim();
+  if (!plain) {
+    throw new IntakeValidationError('Problem topic cannot be empty.');
+  }
+  if (plain.length > 120) {
+    throw new IntakeValidationError('Problem topic cannot exceed 120 characters.');
+  }
+  return plain;
+};

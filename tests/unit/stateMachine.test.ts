@@ -17,7 +17,7 @@ const EXPIRY = new Date('2026-01-04T00:00:00.000Z');
 
 describe('session state machine', () => {
   it('creates a valid invited session', () => {
-    const session = createSessionAggregate('s-1', 'hash', EXPIRY, 'user-a', NOW);
+    const session = createSessionAggregate('s-1', 'hash', EXPIRY, 'user-a', null, NOW);
 
     expect(session.state).toBe(SessionStates.INVITED);
     expect(session.participants).toHaveLength(1);
@@ -25,7 +25,7 @@ describe('session state machine', () => {
   });
 
   it('joins second participant and moves to consent_pending', () => {
-    const session = createSessionAggregate('s-1', 'hash', EXPIRY, 'user-a', NOW);
+    const session = createSessionAggregate('s-1', 'hash', EXPIRY, 'user-a', null, NOW);
     const joined = joinSession(session, 'user-b', NOW);
 
     expect(joined.state).toBe(SessionStates.CONSENT_PENDING);
@@ -33,20 +33,20 @@ describe('session state machine', () => {
   });
 
   it('rejects duplicate join', () => {
-    const session = createSessionAggregate('s-1', 'hash', EXPIRY, 'user-a', NOW);
+    const session = createSessionAggregate('s-1', 'hash', EXPIRY, 'user-a', null, NOW);
 
     expect(() => joinSession(session, 'user-a', NOW)).toThrow(DuplicateJoinError);
   });
 
   it('rejects invalid join state transition', () => {
-    const session = createSessionAggregate('s-1', 'hash', EXPIRY, 'user-a', NOW);
+    const session = createSessionAggregate('s-1', 'hash', EXPIRY, 'user-a', null, NOW);
     const joined = joinSession(session, 'user-b', NOW);
 
     expect(() => joinSession(joined, 'user-c', NOW)).toThrow(InvalidStateTransitionError);
   });
 
   it('records both consents and moves to consented', () => {
-    const session = createSessionAggregate('s-1', 'hash', EXPIRY, 'user-a', NOW);
+    const session = createSessionAggregate('s-1', 'hash', EXPIRY, 'user-a', null, NOW);
     const joined = joinSession(session, 'user-b', NOW);
     const aConsented = grantConsent(joined, 'user-a', NOW);
     const bConsented = grantConsent(aConsented, 'user-b', NOW);
@@ -57,7 +57,7 @@ describe('session state machine', () => {
   });
 
   it('rejects duplicate consent and non-participant consent', () => {
-    const session = createSessionAggregate('s-1', 'hash', EXPIRY, 'user-a', NOW);
+    const session = createSessionAggregate('s-1', 'hash', EXPIRY, 'user-a', null, NOW);
     const joined = joinSession(session, 'user-b', NOW);
     const consented = grantConsent(joined, 'user-a', NOW);
 

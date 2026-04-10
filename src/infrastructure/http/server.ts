@@ -50,6 +50,9 @@ const withIdempotency = (
 };
 
 const userSchema = z.object({ telegramUserId: z.string().min(1) });
+const createSessionSchema = userSchema.extend({
+  problemTopic: z.string().trim().min(1).max(120).optional()
+});
 
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const GENERAL_ACTION_LIMIT = 30;
@@ -116,7 +119,7 @@ export const buildHttpServer = (gateway: ProtocolGatewayService, options: HttpSe
 
   app.post('/sessions/create', async (request, reply) => {
     try {
-      const body = userSchema.parse(request.body);
+      const body = createSessionSchema.parse(request.body);
       if (
         !enforceRateLimit(
           request,
@@ -138,7 +141,8 @@ export const buildHttpServer = (gateway: ProtocolGatewayService, options: HttpSe
           participant_id: body.telegramUserId,
           payload: body
         },
-        body.telegramUserId
+        body.telegramUserId,
+        body.problemTopic
       );
 
       return reply.code(201).send(result);

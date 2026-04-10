@@ -41,6 +41,7 @@ export interface MediationSession {
   state: SessionState;
   inviteTokenHash: string;
   inviteTokenExpiresAt: Date;
+  problemTopic: string | null;
   participants: Participant[];
   createdAt: Date;
   updatedAt: Date;

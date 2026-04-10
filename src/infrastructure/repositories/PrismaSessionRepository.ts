@@ -11,6 +11,7 @@ interface SessionRecord {
   state: string;
   inviteTokenHash: string;
   inviteTokenExpiresAt: Date;
+  problemTopic: string | null;
   createdAt: Date;
   updatedAt: Date;
   participants: Array<{
@@ -26,6 +27,7 @@ const mapSession = (record: SessionRecord): MediationSession => ({
   state: record.state as SessionState,
   inviteTokenHash: record.inviteTokenHash,
   inviteTokenExpiresAt: record.inviteTokenExpiresAt,
+  problemTopic: record.problemTopic,
   createdAt: record.createdAt,
   updatedAt: record.updatedAt,
   participants: record.participants.map(
@@ -48,13 +50,15 @@ export class PrismaSessionRepository implements SessionRepository {
         update: {
           state: session.state,
           inviteTokenHash: session.inviteTokenHash,
-          inviteTokenExpiresAt: session.inviteTokenExpiresAt
+          inviteTokenExpiresAt: session.inviteTokenExpiresAt,
+          problemTopic: session.problemTopic
         },
         create: {
           id: session.id,
           state: session.state,
           inviteTokenHash: session.inviteTokenHash,
-          inviteTokenExpiresAt: session.inviteTokenExpiresAt
+          inviteTokenExpiresAt: session.inviteTokenExpiresAt,
+          problemTopic: session.problemTopic
         }
       });
 

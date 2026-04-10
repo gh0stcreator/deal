@@ -22,7 +22,7 @@ const GENERAL_ACTION_LIMIT = 30;
 const JOIN_ATTEMPT_LIMIT = 8;
 const INVALID_COMMAND_LIMIT = 10;
 
-type PendingInputKind = 'JOIN_TOKEN';
+type PendingInputKind = 'JOIN_TOKEN' | 'CREATE_TOPIC';
 
 const parseArgs = (text: string | undefined): string[] => {
   if (!text) {
@@ -123,6 +123,14 @@ const extractInviteToken = (value: string): string | null => {
   return null;
 };
 
+const normalizeProblemTopicInput = (value: string): string | null => {
+  const plain = value.replace(/\s+/g, ' ').trim();
+  if (!plain || plain.length > 120) {
+    return null;
+  }
+  return plain;
+};
+
 export interface TelegramBotOptions {
   logger?: AppLogger;
   rate_limiter?: InMemoryRateLimiter;
@@ -170,7 +178,10 @@ export const buildTelegramBot = (
   const problemConfirmed = new Set<string>();
   const problemSynthesisSent = new Set<string>();
   const lastSessionByUser = new Map<string, string>();
-  const lastInviteByUser = new Map<string, { deepLink: string | null; token: string }>();
+  const lastInviteByUser = new Map<
+    string,
+    { deepLink: string | null; token: string; topic: string; initiatorName: string }
+  >();
 
   const bot = new Bot(token);
 
@@ -500,7 +511,12 @@ export const buildTelegramBot = (
     }
   };
 
-  const createSessionFlow = async (ctx: Context, telegramUserId: string) => {
+  const createSessionFlow = async (
+    ctx: Context,
+    telegramUserId: string,
+    problemTopic: string,
+    initiatorName: string
+  ) => {
     const correlationId = makeCorrelationId(ctx);
     if (
       !(await enforceRateLimit(ctx, {
@@ -521,9 +537,10 @@ export const buildTelegramBot = (
           action_type: 'create_session',
           case_id: null,
           participant_id: telegramUserId,
-          payload: { command: 'create_session' }
+          payload: { command: 'create_session', problem_topic: problemTopic }
         },
-        telegramUserId
+        telegramUserId,
+        problemTopic
       );
 
       lastSessionByUser.set(telegramUserId, result.session_id);
@@ -531,7 +548,12 @@ export const buildTelegramBot = (
       const deepLink = username
         ? `https://t.me/${username}?start=join_${result.invite_token}`
         : null;
-      lastInviteByUser.set(telegramUserId, { deepLink, token: result.invite_token });
+      lastInviteByUser.set(telegramUserId, {
+        deepLink,
+        token: result.invite_token,
+        topic: problemTopic,
+        initiatorName
+      });
 
       const keyboard = new InlineKeyboard();
       if (deepLink) {
@@ -547,6 +569,12 @@ export const buildTelegramBot = (
       const text = [
         'Договорённость создана.',
         'Отправь приглашение второму человеку — после этого вы оба сможете подтвердить участие.',
+        '',
+        `${initiatorName} хочет обсудить с вами:`,
+        `«${problemTopic}»`,
+        '',
+        'Я помогу вам спокойно договориться.',
+        '',
         deepLink
           ? ['Ссылка для приглашения:', deepLink, 'Открой сам или отправь второму человеку'].join('\n')
           : 'Не получилось создать ссылку в этом чате.',
@@ -676,7 +704,16 @@ export const buildTelegramBot = (
   });
 
   bot.command('create_session', async (ctx) => {
-    await createSessionFlow(ctx, userIdFromCtx(ctx));
+    const telegramUserId = userIdFromCtx(ctx);
+    pendingInput.set(telegramUserId, 'CREATE_TOPIC');
+    await sendReplyWithRetry(
+      ctx,
+      'О чём хотите договориться? Опиши коротко.',
+      {
+        correlation_id: makeCorrelationId(ctx),
+        action_type: 'create_topic_prompt'
+      }
+    );
   });
 
   bot.command('join_session', async (ctx) => {
@@ -1186,7 +1223,15 @@ export const buildTelegramBot = (
     const action = ctx.match[1];
 
     if (action === 'create') {
-      await createSessionFlow(ctx, telegramUserId);
+      pendingInput.set(telegramUserId, 'CREATE_TOPIC');
+      await sendReplyWithRetry(
+        ctx,
+        'О чём хотите договориться? Опиши коротко.',
+        {
+          correlation_id: makeCorrelationId(ctx),
+          action_type: 'create_topic_prompt'
+        }
+      );
       return;
     }
 
@@ -1411,6 +1456,11 @@ export const buildTelegramBot = (
     await sendReplyWithRetry(
       ctx,
       [
+        `${invite.initiatorName} хочет обсудить с вами:`,
+        `«${invite.topic}»`,
+        '',
+        'Я помогу вам спокойно договориться.',
+        '',
         invite.deepLink
           ? ['Ссылка для приглашения:', invite.deepLink, 'Открой сам или отправь второму человеку'].join('\n')
           : 'Не получилось создать ссылку в этом чате.',
@@ -1550,6 +1600,26 @@ export const buildTelegramBot = (
     const waiting = pendingInput.get(telegramUserId);
     if (!waiting) {
       return next();
+    }
+
+    if (waiting === 'CREATE_TOPIC') {
+      const topic = normalizeProblemTopicInput(text);
+      if (!topic) {
+        await sendReplyWithRetry(
+          ctx,
+          'Тема должна быть короткой: до 120 символов. Попробуй ещё раз.',
+          {
+            correlation_id: makeCorrelationId(ctx),
+            action_type: 'create_topic_validate'
+          }
+        );
+        return;
+      }
+
+      pendingInput.delete(telegramUserId);
+      const initiatorName = (ctx.from?.first_name ?? 'Кто-то').replace(/\s+/g, ' ').trim();
+      await createSessionFlow(ctx, telegramUserId, topic, initiatorName || 'Кто-то');
+      return;
     }
 
     if (waiting === 'JOIN_TOKEN') {
