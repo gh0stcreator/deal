@@ -496,7 +496,7 @@ describe('transport adapters', () => {
     await sendTelegramText(bot, 61, 101, 'Сроки и оплата за проект');
     const creatorReply = replies[replies.length - 1];
     expect(creatorReply).toContain('Договорённость создана');
-    expect(creatorReply).toContain('Нажми «Пригласить человека»');
+    expect(creatorReply).toContain('Открой приглашение и отправь его второму человеку.');
     expect(creatorReply).toContain('user хочет обсудить с вами:');
     expect(creatorReply).toContain('«Сроки и оплата за проект»');
     await sendTelegramCallback(bot, 62, 101, 'invite:details');

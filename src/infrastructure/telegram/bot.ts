@@ -557,7 +557,7 @@ export const buildTelegramBot = (
 
       const keyboard = new InlineKeyboard();
       keyboard
-        .text('Пригласить человека', 'invite:send')
+        .text('Показать приглашение', 'invite:send')
         .row()
         .text('Если ссылка не сработает', 'invite:details')
         .row()
@@ -567,7 +567,7 @@ export const buildTelegramBot = (
 
       const text = [
         'Договорённость создана.',
-        'Нажми «Пригласить человека», чтобы отправить приглашение второму человеку.',
+        'Открой приглашение и отправь его второму человеку.',
         '',
         `${initiatorName} хочет обсудить с вами:`,
         `«${problemTopic}»`,
