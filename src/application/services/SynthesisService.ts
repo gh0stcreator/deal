@@ -6,6 +6,10 @@ import { SessionRepository } from '../ports/SessionRepository.js';
 import { SynthesisMapper } from '../ports/SynthesisMapper.js';
 import { IntakeFieldOrder, IntakeStates, NormalizedPositionModel } from '../../domain/intake/types.js';
 import { SessionNotFoundError } from '../../domain/session/errors.js';
+import {
+  markReadyForProposal,
+  markSynthesisCompleted
+} from '../../domain/session/stateMachine.js';
 import { SessionStates } from '../../domain/session/types.js';
 import { SynthesisPreconditionError } from '../../domain/synthesis/errors.js';
 import { MediationSummary } from '../../domain/synthesis/types.js';
@@ -65,6 +69,9 @@ export class SynthesisService {
     };
 
     await this.summaryRepository.save(summary);
+    const synthesisCompleted = markSynthesisCompleted(session, this.clock.now());
+    const readyForProposal = markReadyForProposal(synthesisCompleted, this.clock.now());
+    await this.sessionRepository.save(readyForProposal);
 
     return summary;
   }

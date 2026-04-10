@@ -122,3 +122,54 @@ export const grantConsent = (
     updatedAt: now
   };
 };
+
+export const markSynthesisCompleted = (
+  session: MediationSession,
+  now: Date
+): MediationSession => {
+  if (session.state !== SessionStates.READY_FOR_SYNTHESIS) {
+    throw new InvalidStateTransitionError(
+      `Cannot mark synthesis completed from state ${session.state}.`
+    );
+  }
+
+  return {
+    ...session,
+    state: SessionStates.SYNTHESIS_COMPLETED,
+    updatedAt: now
+  };
+};
+
+export const markReadyForProposal = (
+  session: MediationSession,
+  now: Date
+): MediationSession => {
+  if (session.state !== SessionStates.SYNTHESIS_COMPLETED) {
+    throw new InvalidStateTransitionError(
+      `Cannot mark ready for proposal from state ${session.state}.`
+    );
+  }
+
+  return {
+    ...session,
+    state: SessionStates.READY_FOR_PROPOSAL,
+    updatedAt: now
+  };
+};
+
+export const markProposalsGenerated = (
+  session: MediationSession,
+  now: Date
+): MediationSession => {
+  if (session.state !== SessionStates.READY_FOR_PROPOSAL) {
+    throw new InvalidStateTransitionError(
+      `Cannot mark proposals generated from state ${session.state}.`
+    );
+  }
+
+  return {
+    ...session,
+    state: SessionStates.PROPOSALS_GENERATED,
+    updatedAt: now
+  };
+};

@@ -16,6 +16,9 @@ enum SessionState {
   SIDE_A_INTAKE
   SIDE_B_INTAKE
   READY_FOR_SYNTHESIS
+  SYNTHESIS_COMPLETED
+  READY_FOR_PROPOSAL
+  PROPOSALS_GENERATED
   PROPOSAL_READY
   NEGOTIATION
   AGREEMENT
@@ -47,6 +50,12 @@ enum IntakeField {
   NON_NEGOTIABLES
 }
 
+enum ProposalVariantType {
+  BALANCED
+  A_LEANING
+  B_LEANING
+}
+
 model MediationSession {
   id                String                @id @default(cuid())
   state             SessionState
@@ -56,6 +65,7 @@ model MediationSession {
   updatedAt         DateTime              @updatedAt
   participants      SessionParticipant[]
   summaries         MediationSummary[]
+  proposalSets      ProposalSet[]
 }
 
 model SessionParticipant {
@@ -163,4 +173,29 @@ model MediationSummary {
 
   @@unique([caseId, version])
   @@index([caseId])
+}
+
+model ProposalSet {
+  id                       String            @id
+  caseId                   String
+  version                  Int
+  mediationSummaryVersion  Int
+  createdAt                DateTime          @default(now())
+
+  session                  MediationSession  @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  variants                 ProposalVariant[]
+
+  @@unique([caseId, version])
+  @@index([caseId])
+}
+
+model ProposalVariant {
+  id             String             @id
+  proposalSetId  String
+  variantType    ProposalVariantType
+  payloadJson    Json
+
+  proposalSet    ProposalSet        @relation(fields: [proposalSetId], references: [id], onDelete: Cascade)
+
+  @@unique([proposalSetId, variantType])
 }
