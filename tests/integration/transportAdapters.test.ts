@@ -676,6 +676,29 @@ describe('transport adapters', () => {
     expect(replies.some((message) => message.includes('Ты подключился к договорённости'))).toBe(true);
   });
 
+  it('keeps topic input pending after create failure so user can retry by sending text again', async () => {
+    const setup = await setupTransport();
+    const originalCreateSession = setup.gateway.createSession.bind(setup.gateway);
+    let createAttempts = 0;
+
+    setup.gateway.createSession = async (ctx, telegramUserId, problemTopic) => {
+      createAttempts += 1;
+      if (createAttempts === 1) {
+        throw new Error('transient create failure');
+      }
+      return originalCreateSession(ctx, telegramUserId, problemTopic);
+    };
+
+    await sendTelegramCallback(setup.bot, 80, 101, 'menu:create');
+    expect(setup.replies[setup.replies.length - 1]).toContain('О чём хотите договориться? Опиши коротко.');
+
+    await sendTelegramText(setup.bot, 81, 101, 'Сроки и оплата');
+    expect(setup.replies[setup.replies.length - 1]).toContain('Что-то пошло не так. Попробуй ещё раз.');
+
+    await sendTelegramText(setup.bot, 82, 101, 'Сроки и оплата за проект');
+    expect(setup.replies[setup.replies.length - 1]).toContain('Договорённость создана.');
+  });
+
   it('deduplicates repeated Telegram delivery by update_id idempotency key', async () => {
     const setup = await setupTransport();
 

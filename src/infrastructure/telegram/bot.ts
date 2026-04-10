@@ -534,7 +534,7 @@ export const buildTelegramBot = (
     telegramUserId: string,
     problemTopic: string,
     initiatorName: string
-  ) => {
+  ): Promise<boolean> => {
     const correlationId = makeCorrelationId(ctx);
     if (
       !(await enforceRateLimit(ctx, {
@@ -543,7 +543,7 @@ export const buildTelegramBot = (
         action_type: 'create_session'
       }))
     ) {
-      return;
+      return false;
     }
 
     try {
@@ -599,11 +599,13 @@ export const buildTelegramBot = (
         { correlation_id: correlationId, action_type: 'create_session' },
         { reply_markup: keyboard }
       );
+      return true;
     } catch (error) {
       await sendReplyWithRetry(ctx, mapTelegramErrorText(error), {
         correlation_id: correlationId,
         action_type: 'create_session'
       });
+      return false;
     }
   };
 
@@ -1653,9 +1655,11 @@ export const buildTelegramBot = (
         return;
       }
 
-      pendingInput.delete(telegramUserId);
       const initiatorName = (ctx.from?.first_name ?? 'Кто-то').replace(/\s+/g, ' ').trim();
-      await createSessionFlow(ctx, telegramUserId, topic, initiatorName || 'Кто-то');
+      const created = await createSessionFlow(ctx, telegramUserId, topic, initiatorName || 'Кто-то');
+      if (created) {
+        pendingInput.delete(telegramUserId);
+      }
       return;
     }
 
