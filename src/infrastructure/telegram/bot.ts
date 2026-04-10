@@ -556,11 +556,10 @@ export const buildTelegramBot = (
       });
 
       const keyboard = new InlineKeyboard();
-      if (deepLink) {
-        keyboard.text('Открыть приглашение', deepLink).row();
-      }
       keyboard
-        .text('Отправить приглашение', 'invite:copy')
+        .text('Пригласить человека', 'invite:send')
+        .row()
+        .text('Если ссылка не сработает', 'invite:details')
         .row()
         .text('Подтвердить участие', `consent:${result.session_id}`)
         .row()
@@ -568,18 +567,14 @@ export const buildTelegramBot = (
 
       const text = [
         'Договорённость создана.',
-        'Отправь приглашение второму человеку — после этого вы оба сможете подтвердить участие.',
+        'Нажми «Пригласить человека», чтобы отправить приглашение второму человеку.',
         '',
         `${initiatorName} хочет обсудить с вами:`,
         `«${problemTopic}»`,
         '',
         'Я помогу вам спокойно договориться.',
         '',
-        deepLink
-          ? ['Ссылка для приглашения:', deepLink, 'Открой сам или отправь второму человеку'].join('\n')
-          : 'Не получилось создать ссылку в этом чате.',
-        ['Если ссылка не сработает, отправь этот токен:', result.invite_token].join('\n'),
-        'Дальше: дождись второго человека и нажми «Подтвердить участие».'
+        'Дальше: отправь приглашение и дождись второго человека.'
       ].join('\n');
 
       await sendReplyWithRetry(
@@ -1441,14 +1436,14 @@ export const buildTelegramBot = (
     }
   });
 
-  bot.callbackQuery('invite:copy', async (ctx) => {
+  bot.callbackQuery('invite:send', async (ctx) => {
     await safeAnswerCallback(ctx);
     const telegramUserId = userIdFromCtx(ctx);
     const invite = lastInviteByUser.get(telegramUserId);
     if (!invite) {
       await sendReplyWithRetry(ctx, 'Сначала создай договорённость, чтобы получить приглашение.', {
         correlation_id: makeCorrelationId(ctx),
-        action_type: 'invite_copy'
+        action_type: 'invite_send'
       });
       return;
     }
@@ -1456,20 +1451,46 @@ export const buildTelegramBot = (
     await sendReplyWithRetry(
       ctx,
       [
+        'Отправь это приглашение второму человеку:',
+        '',
         `${invite.initiatorName} хочет обсудить с вами:`,
         `«${invite.topic}»`,
         '',
         'Я помогу вам спокойно договориться.',
         '',
+        invite.deepLink ?? 'Не получилось создать ссылку в этом чате.'
+      ].join('\n'),
+      {
+        correlation_id: makeCorrelationId(ctx),
+        action_type: 'invite_send'
+      }
+    );
+  });
+
+  bot.callbackQuery(/^invite:(details|copy)$/, async (ctx) => {
+    await safeAnswerCallback(ctx);
+    const telegramUserId = userIdFromCtx(ctx);
+    const invite = lastInviteByUser.get(telegramUserId);
+    if (!invite) {
+      await sendReplyWithRetry(ctx, 'Сначала создай договорённость, чтобы получить приглашение.', {
+        correlation_id: makeCorrelationId(ctx),
+        action_type: 'invite_details'
+      });
+      return;
+    }
+
+    await sendReplyWithRetry(
+      ctx,
+      [
         invite.deepLink
-          ? ['Ссылка для приглашения:', invite.deepLink, 'Открой сам или отправь второму человеку'].join('\n')
+          ? ['Ссылка для приглашения:', invite.deepLink].join('\n')
           : 'Не получилось создать ссылку в этом чате.',
         'Если ссылка не сработает, отправь этот токен:',
         invite.token
       ].join('\n'),
       {
         correlation_id: makeCorrelationId(ctx),
-        action_type: 'invite_copy'
+        action_type: 'invite_details'
       }
     );
   });
