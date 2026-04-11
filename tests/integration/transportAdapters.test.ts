@@ -541,7 +541,8 @@ describe('transport adapters', () => {
 
     await sendTelegramCallback(bot, 67, 102, `consent:${sessionId}`);
     expect(replies.some((entry) => entry.includes('Готово. Вы оба подтвердили участие'))).toBe(true);
-    expect(replies[replies.length - 1]).toContain('С чем хотите договориться? Опиши коротко');
+    expect(replies[replies.length - 1]).toContain('Важно:');
+    expect(replies[replies.length - 1]).toContain('В чём сейчас основная проблема?');
 
     await sendTelegramText(bot, 68, 101, 'Хотим договориться о сроках и оплате');
     expect(replies[replies.length - 1]).toContain('Я записал это так:');
