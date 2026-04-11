@@ -1074,6 +1074,23 @@ export const buildTelegramBot = (
         action_type: 'select_preferred'
       });
     } catch (error) {
+      if (
+        error instanceof DomainError &&
+        (error.code === 'INTAKE_NOT_FOUND' ||
+          (error.code === 'INTAKE_VALIDATION_ERROR' &&
+            error.message.includes('Synthesis requires confirmed problem statements')))
+      ) {
+        await sendReplyWithRetry(
+          ctx,
+          'Пока не хватает данных второй стороны. Ждём второго человека.',
+          {
+            correlation_id: makeCorrelationId(ctx),
+            action_type: 'problem_confirm'
+          }
+        );
+        return;
+      }
+
       await sendReplyWithRetry(
         ctx,
         mapTelegramErrorText(error),
