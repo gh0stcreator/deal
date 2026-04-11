@@ -1431,7 +1431,16 @@ export const buildTelegramBot = (
         return;
       }
 
-      const readiness = await gateway.getProblemDefinitionReadiness(sessionId, telegramUserId);
+      let readiness = await gateway.getProblemDefinitionReadiness(sessionId, telegramUserId);
+      if (!readiness.both_ready) {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          await sleep(150);
+          readiness = await gateway.getProblemDefinitionReadiness(sessionId, telegramUserId);
+          if (readiness.both_ready) {
+            break;
+          }
+        }
+      }
       if (!readiness.both_ready) {
         await sendReplyWithRetry(
           ctx,
