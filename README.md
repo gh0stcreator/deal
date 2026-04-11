@@ -62,6 +62,8 @@ Predictable reset workflow (local/dev DB):
   - `corepack pnpm build`
 - Postgres runtime suite:
   - `TEST_DATABASE_URL=postgresql://deal:deal@localhost:5432/deal?schema=public corepack pnpm test:postgres`
+- Transcript-driven Telegram scenarios:
+  - `corepack pnpm test tests/integration/telegramTranscriptScenarios.test.ts`
 
 ## Runtime protections (current thresholds)
 - Join/invite brute-force: `8 requests / 60s` per participant.

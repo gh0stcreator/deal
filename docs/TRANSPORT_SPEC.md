@@ -92,3 +92,30 @@ Every transport-triggered protocol action persists `ProtocolEvent` with:
 - Telegram outbound responses are retried with exponential backoff for transient failures.
 - Protocol mutation success is decoupled from outbound delivery success.
 - If outbound delivery fails after mutation, replaying the same action is safe via idempotency.
+
+## Transcript-driven debugging (Phase 5 hardening)
+- Golden Telegram transcript scenarios are covered by:
+  - `tests/integration/telegramTranscriptScenarios.test.ts`
+  - `tests/integration/support/telegramTranscriptHarness.ts`
+  - `tests/fixtures/transcripts/*.json`
+- Replay utility for saved transcripts:
+  - `tests/integration/support/replayTranscriptFromFile.ts`
+
+### Event-level UX observability fields
+Each incoming Telegram update emits structured logs:
+- `session_id` (when resolvable)
+- `telegram_user_id`
+- `role` (when known)
+- `event_type`
+- `current_ux_step`
+- `current_protocol_state`
+- `next_ux_step`
+- `next_protocol_state`
+- `error_code` (on failed transitions)
+
+### Generic fallback debuggability
+When a handler returns mapped fallback text, logs include:
+- handler name
+- action type
+- domain error code (if present)
+- error message
