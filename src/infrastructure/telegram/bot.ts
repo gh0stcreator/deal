@@ -23,7 +23,6 @@ const JOIN_ATTEMPT_LIMIT = 8;
 const INVALID_COMMAND_LIMIT = 10;
 
 type PendingInputKind = 'JOIN_TOKEN' | 'CREATE_TOPIC';
-type CreateTopicDraftStage = 'DRAFT_REVIEW' | 'FINAL_CONFIRM';
 
 const parseArgs = (text: string | undefined): string[] => {
   if (!text) {
@@ -179,7 +178,7 @@ export const buildTelegramBot = (
   const sleep =
     options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const pendingInput = new Map<string, PendingInputKind>();
-  const pendingCreateTopicDraft = new Map<string, { topic: string; stage: CreateTopicDraftStage }>();
+  const pendingCreateTopicDraft = new Map<string, { topic: string }>();
   const pendingProblemSession = new Map<string, string>();
   const pendingSynthesisClarificationSession = new Map<string, string>();
   const problemConfirmed = new Set<string>();
@@ -401,12 +400,6 @@ export const buildTelegramBot = (
       .text('Да, отправить', 'create_topic:confirm_draft')
       .row()
       .text('Хочу переформулировать', 'create_topic:rephrase');
-
-  const createTopicFinalKeyboard = () =>
-    new InlineKeyboard()
-      .text('Да, отправить', 'create_topic:confirm_final')
-      .row()
-      .text('Нет, изменить', 'create_topic:edit_final');
 
   const synthesisFeedbackKeyboard = (sessionId: string) =>
     new InlineKeyboard()
@@ -1465,7 +1458,7 @@ export const buildTelegramBot = (
     );
   });
 
-  bot.callbackQuery(/^create_topic:(confirm_draft|rephrase|confirm_final|edit_final)$/, async (ctx) => {
+  bot.callbackQuery(/^create_topic:(confirm_draft|rephrase)$/, async (ctx) => {
     await safeAnswerCallback(ctx);
     const telegramUserId = userIdFromCtx(ctx);
     const action = ctx.match[1];
@@ -1484,7 +1477,7 @@ export const buildTelegramBot = (
       return;
     }
 
-    if (action === 'rephrase' || action === 'edit_final') {
+    if (action === 'rephrase') {
       pendingCreateTopicDraft.delete(telegramUserId);
       pendingInput.set(telegramUserId, 'CREATE_TOPIC');
       await sendReplyWithRetry(
@@ -1494,20 +1487,6 @@ export const buildTelegramBot = (
           correlation_id: makeCorrelationId(ctx),
           action_type: 'create_topic_rephrase'
         }
-      );
-      return;
-    }
-
-    if (action === 'confirm_draft') {
-      pendingCreateTopicDraft.set(telegramUserId, { topic: draft.topic, stage: 'FINAL_CONFIRM' });
-      await sendReplyWithRetry(
-        ctx,
-        ['Я отправлю это второму человеку как тему договорённости:', `«${draft.topic}»`, '', 'Отправляем?'].join('\n'),
-        {
-          correlation_id: makeCorrelationId(ctx),
-          action_type: 'create_topic_final_confirm'
-        },
-        { reply_markup: createTopicFinalKeyboard() }
       );
       return;
     }
@@ -1800,7 +1779,7 @@ export const buildTelegramBot = (
         return;
       }
 
-      pendingCreateTopicDraft.set(telegramUserId, { topic, stage: 'DRAFT_REVIEW' });
+      pendingCreateTopicDraft.set(telegramUserId, { topic });
       await sendReplyWithRetry(
         ctx,
         ['Я понял так:', `«${topic}»`, '', 'Это то, что вы хотите обсудить?'].join('\n'),
