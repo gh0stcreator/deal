@@ -1387,75 +1387,86 @@ export const buildTelegramBot = (
     await safeAnswerCallback(ctx);
     const sessionId = ctx.match[1];
     const telegramUserId = userIdFromCtx(ctx);
-    problemConfirmed.add(`${sessionId}:${telegramUserId}`);
+    try {
+      problemConfirmed.add(`${sessionId}:${telegramUserId}`);
 
-    if (problemSynthesisSent.has(sessionId)) {
+      if (problemSynthesisSent.has(sessionId)) {
+        await sendReplyWithRetry(
+          ctx,
+          'Вы уже подтвердили свою формулировку.',
+          {
+            correlation_id: makeCorrelationId(ctx),
+            action_type: 'problem_confirm'
+          }
+        );
+        return;
+      }
+
+      const session = await gateway.getSessionStatus(sessionId, telegramUserId);
+      const bothConfirmed = session.participants.every((participant) =>
+        problemConfirmed.has(`${sessionId}:${participant.telegramUserId}`)
+      );
+
+      if (bothConfirmed) {
+        const synthesisEnvelope = await gateway.buildProblemSynthesis(
+          {
+            correlation_id: makeCorrelationId(ctx),
+            channel: 'TELEGRAM',
+            idempotency_key: makeKey(ctx, 'problem_synthesis'),
+            action_type: 'problem_synthesis',
+            case_id: sessionId,
+            participant_id: telegramUserId,
+            payload: { session_id: sessionId }
+          },
+          sessionId,
+          telegramUserId
+        );
+        const synthesisText = renderProblemSynthesis(synthesisEnvelope.synthesis);
+        problemSynthesisSent.add(sessionId);
+        for (const participant of session.participants) {
+          if (participant.telegramUserId === telegramUserId) {
+            await sendReplyWithRetry(
+              ctx,
+              synthesisText,
+              {
+                correlation_id: makeCorrelationId(ctx),
+                action_type: 'problem_both_confirmed'
+              },
+              { reply_markup: synthesisFeedbackKeyboard(sessionId) }
+            );
+          } else {
+            await sendDirectWithRetry(
+              participant.telegramUserId,
+              synthesisText,
+              {
+                correlation_id: `tg:problem:${sessionId}:${participant.telegramUserId}`,
+                action_type: 'problem_both_confirmed'
+              },
+              { reply_markup: synthesisFeedbackKeyboard(sessionId) }
+            );
+          }
+        }
+        return;
+      }
+
       await sendReplyWithRetry(
         ctx,
-        'Вы уже подтвердили свою формулировку.',
+        ['Вы подтвердили свою формулировку.', 'Ждём второго человека.'].join('\n'),
         {
           correlation_id: makeCorrelationId(ctx),
           action_type: 'problem_confirm'
         }
       );
-      return;
-    }
-
-    const session = await gateway.getSessionStatus(sessionId, telegramUserId);
-    const bothConfirmed = session.participants.every((participant) =>
-      problemConfirmed.has(`${sessionId}:${participant.telegramUserId}`)
-    );
-
-    if (bothConfirmed) {
-      const synthesisEnvelope = await gateway.buildProblemSynthesis(
+    } catch (error) {
+      await sendReplyWithRetry(
+        ctx,
+        mapTelegramErrorText(error),
         {
           correlation_id: makeCorrelationId(ctx),
-          channel: 'TELEGRAM',
-          idempotency_key: makeKey(ctx, 'problem_synthesis'),
-          action_type: 'problem_synthesis',
-          case_id: sessionId,
-          participant_id: telegramUserId,
-          payload: { session_id: sessionId }
-        },
-        sessionId,
-        telegramUserId
-      );
-      const synthesisText = renderProblemSynthesis(synthesisEnvelope.synthesis);
-      problemSynthesisSent.add(sessionId);
-      for (const participant of session.participants) {
-        if (participant.telegramUserId === telegramUserId) {
-          await sendReplyWithRetry(
-            ctx,
-            synthesisText,
-            {
-              correlation_id: makeCorrelationId(ctx),
-              action_type: 'problem_both_confirmed'
-            },
-            { reply_markup: synthesisFeedbackKeyboard(sessionId) }
-          );
-        } else {
-          await sendDirectWithRetry(
-            participant.telegramUserId,
-            synthesisText,
-            {
-              correlation_id: `tg:problem:${sessionId}:${participant.telegramUserId}`,
-              action_type: 'problem_both_confirmed'
-            },
-            { reply_markup: synthesisFeedbackKeyboard(sessionId) }
-          );
+          action_type: 'problem_confirm'
         }
-      }
-      return;
+      );
     }
-
-    await sendReplyWithRetry(
-      ctx,
-      ['Вы подтвердили свою формулировку.', 'Ждём второго человека.'].join('\n'),
-      {
-        correlation_id: makeCorrelationId(ctx),
-        action_type: 'problem_confirm'
-      }
-    );
   });
 
   bot.callbackQuery(/^create_topic:(confirm_draft|rephrase)$/, async (ctx) => {
