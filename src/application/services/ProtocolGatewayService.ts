@@ -85,6 +85,13 @@ export interface ProblemSynthesisEnvelope {
   synthesis: ProblemSynthesisView;
 }
 
+export interface ProblemDefinitionReadiness {
+  participant_count: number;
+  confirmed_count: number;
+  statement_count: number;
+  both_ready: boolean;
+}
+
 export interface ProblemSynthesisReviewSummary {
   synthesis_version: number | null;
   review_summary: 'both_confirmed' | 'one_confirmed_one_clarified' | 'both_clarified' | 'incomplete';
@@ -253,6 +260,76 @@ export class ProtocolGatewayService {
 
       return { recorded_text: text };
     });
+  }
+
+  async confirmProblemDefinition(
+    ctx: ActionExecutionContext,
+    sessionId: string,
+    telegramUserId: string
+  ): Promise<{ session_id: string; confirmed: true }> {
+    return this.executeIdempotent(ctx, async () => {
+      await this.requireParticipant(sessionId, telegramUserId);
+      const privateData = await this.intakeService.getPrivateIntakeData(sessionId, telegramUserId);
+      const statement =
+        privateData.view.fields[ProtocolGatewayService.PROBLEM_STATEMENT_FIELD].rawValue?.trim() ??
+        '';
+      if (!statement) {
+        throw new IntakeValidationError('Problem statement is missing for this participant.');
+      }
+
+      return { session_id: sessionId, confirmed: true };
+    });
+  }
+
+  async getProblemDefinitionReadiness(
+    sessionId: string,
+    telegramUserId: string
+  ): Promise<ProblemDefinitionReadiness> {
+    const session = await this.requireParticipant(sessionId, telegramUserId);
+    const events = await this.trackingRepository.listProtocolEvents(sessionId);
+
+    const confirmedParticipantIds = new Set(
+      events
+        .filter(
+          (event) =>
+            event.action_type === 'problem_confirm' &&
+            event.outcome !== ProtocolEventOutcomes.ERROR &&
+            Boolean(event.participant_id)
+        )
+        .map((event) => event.participant_id as string)
+    );
+
+    let statementCount = 0;
+    for (const participant of session.participants) {
+      try {
+        const privateData = await this.intakeService.getPrivateIntakeData(
+          sessionId,
+          participant.telegramUserId
+        );
+        const statement =
+          privateData.view.fields[ProtocolGatewayService.PROBLEM_STATEMENT_FIELD].rawValue?.trim() ??
+          '';
+        if (statement) {
+          statementCount += 1;
+        }
+      } catch (error) {
+        if (!(error instanceof DomainError) || error.code !== 'INTAKE_NOT_FOUND') {
+          throw error;
+        }
+      }
+    }
+
+    const confirmedCount = session.participants.filter((participant) =>
+      confirmedParticipantIds.has(participant.telegramUserId)
+    ).length;
+
+    return {
+      participant_count: session.participants.length,
+      confirmed_count: confirmedCount,
+      statement_count: statementCount,
+      both_ready:
+        session.participants.length === 2 && confirmedCount === 2 && statementCount === 2
+    };
   }
 
   async buildProblemSynthesis(
