@@ -463,42 +463,105 @@ export const buildTelegramBot = (
 
       const session = await gateway.getSessionStatus(sessionId, participantTelegramUserId);
       const allCompleted = session.state === SessionStates.READY_FOR_SYNTHESIS;
-
-      const doneText = allCompleted
-        ? ['Спасибо. Обе стороны завершили ответы.', 'Переходим к следующему шагу.'].join('\n')
-        : ['Спасибо, ваша часть собрана.', 'Сейчас ждём второго человека.'].join('\n');
-      if (source === 'current' && ctx) {
-        await sendReplyWithRetry(ctx, doneText, {
-          correlation_id: makeCorrelationId(ctx),
-          action_type: 'mediation_intake_completed'
-        });
+      if (!allCompleted) {
+        const waitText = ['Спасибо, ваша часть собрана.', 'Сейчас ждём второго человека.'].join('\n');
+        if (source === 'current' && ctx) {
+          await sendReplyWithRetry(ctx, waitText, {
+            correlation_id: makeCorrelationId(ctx),
+            action_type: 'mediation_intake_completed'
+          });
+          return;
+        }
+        await sendDirectWithRetry(
+          participantTelegramUserId,
+          waitText,
+          {
+            correlation_id: `tg:intake:${sessionId}:${participantTelegramUserId}`,
+            action_type: 'mediation_intake_completed'
+          }
+        );
         return;
       }
-      await sendDirectWithRetry(
-        participantTelegramUserId,
-        doneText,
-        {
-          correlation_id: `tg:intake:${sessionId}:${participantTelegramUserId}`,
-          action_type: 'mediation_intake_completed'
-        }
-      );
 
-      if (allCompleted) {
-        for (const participant of session.participants) {
-          if (participant.telegramUserId === participantTelegramUserId) {
-            continue;
-          }
-          await sendDirectWithRetry(
-            participant.telegramUserId,
-            ['Спасибо. Обе стороны завершили ответы.', 'Переходим к следующему шагу.'].join('\n'),
+      if (problemSynthesisSent.has(sessionId)) {
+        const alreadySentText = 'Сводная картина уже готова. Проверьте последнее сообщение.';
+        if (source === 'current' && ctx) {
+          await sendReplyWithRetry(
+            ctx,
+            alreadySentText,
             {
-              correlation_id: `tg:intake_done:${sessionId}:${participant.telegramUserId}`,
-              action_type: 'mediation_intake_completed'
+              correlation_id: makeCorrelationId(ctx),
+              action_type: 'problem_synthesis_ready'
             }
           );
+          return;
         }
+        await sendDirectWithRetry(
+          participantTelegramUserId,
+          alreadySentText,
+          {
+            correlation_id: `tg:synthesis:${sessionId}:${participantTelegramUserId}`,
+            action_type: 'problem_synthesis_ready'
+          }
+        );
+        return;
       }
-      return;
+
+      try {
+        problemSynthesisSent.add(sessionId);
+        const synthesis = await gateway.buildProblemSynthesis(
+          {
+            correlation_id:
+              source === 'current' && ctx
+                ? makeCorrelationId(ctx)
+                : `tg:problem_synthesis:${sessionId}:${participantTelegramUserId}`,
+            channel: 'TELEGRAM',
+            idempotency_key: `tg:problem_synthesis:${sessionId}:${participantTelegramUserId}`,
+            action_type: 'problem_synthesis',
+            case_id: sessionId,
+            participant_id: participantTelegramUserId,
+            payload: { session_id: sessionId }
+          },
+          sessionId,
+          participantTelegramUserId
+        );
+        const synthesisText = renderProblemSynthesis(synthesis.synthesis);
+        for (const participant of session.participants) {
+          await sendDirectWithRetry(
+            participant.telegramUserId,
+            synthesisText,
+            {
+              correlation_id: `tg:problem_synthesis_send:${sessionId}:${participant.telegramUserId}`,
+              action_type: 'problem_synthesis_send'
+            },
+            { reply_markup: synthesisFeedbackKeyboard(sessionId) }
+          );
+        }
+        return;
+      } catch (error) {
+        problemSynthesisSent.delete(sessionId);
+        const errorText = mapTelegramErrorText(error);
+        if (source === 'current' && ctx) {
+          await sendReplyWithRetry(
+            ctx,
+            errorText,
+            {
+              correlation_id: makeCorrelationId(ctx),
+              action_type: 'problem_synthesis_send'
+            }
+          );
+          return;
+        }
+        await sendDirectWithRetry(
+          participantTelegramUserId,
+          errorText,
+          {
+            correlation_id: `tg:problem_synthesis_error:${sessionId}:${participantTelegramUserId}`,
+            action_type: 'problem_synthesis_send'
+          }
+        );
+        return;
+      }
     }
 
     pendingMediationIntakeSession.set(participantTelegramUserId, sessionId);
@@ -558,14 +621,17 @@ export const buildTelegramBot = (
 
   const renderProblemSynthesis = (view: ProblemSynthesisView): string =>
     [
-      'Похоже, вы хотите договориться вот о чём:',
-      view.focus,
+      'Похоже, вы оба хотите...',
+      view.shared_goal,
       '',
-      'Общее между вашими позициями:',
-      view.shared_points,
+      'У вас уже есть общее в том, что...',
+      `- ${view.agreement_points.join('\n- ')}`,
       '',
-      'Где пока есть расхождение:',
-      view.divergence
+      'Главная точка напряжения сейчас...',
+      view.primary_tension_point,
+      '',
+      'Похоже, рабочее поле для договорённости может быть таким...',
+      view.possible_zone_of_agreement
     ].join('\n');
 
   const describeSessionForUser = async (

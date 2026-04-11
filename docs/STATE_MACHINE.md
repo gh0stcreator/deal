@@ -75,8 +75,10 @@ Legacy reserved enum values still present for compatibility:
 
 9. `run_synthesis`
 - from: `READY_FOR_SYNTHESIS`
-- to: `SYNTHESIS_COMPLETED` then `READY_FOR_PROPOSAL`
+- to: stays in synthesis-review layer until both participants react (`confirm`/`clarify`)
 - guard: both participant intakes completed + summaries confirmed
+- input boundary: confirmed normalized intake fields only
+- output: structured neutral synthesis object (`shared_goal`, `agreement_points`, `tension_points`, `primary_tension_point`, side interests/constraints, `possible_zone_of_agreement`)
 
 10. `generate_proposals`
 - from: `READY_FOR_PROPOSAL`

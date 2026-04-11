@@ -79,10 +79,21 @@
 - `id`
 - `caseId`
 - `version` (unique per case)
-- `focus`
-- `sharedPoints`
-- `divergence`
+- `focus` (mapped from `shared_goal`)
+- `sharedPoints` (mapped from `agreement_points`)
+- `divergence` (mapped from `primary_tension_point`)
 - `createdAt`
+
+Structured synthesis payload (application-level shape):
+- `shared_goal`
+- `agreement_points`
+- `tension_points`
+- `primary_tension_point`
+- `side_a_interest`
+- `side_b_interest`
+- `side_a_constraint`
+- `side_b_constraint`
+- `possible_zone_of_agreement`
 
 ### `SynthesisReviewSignal`
 - `id`

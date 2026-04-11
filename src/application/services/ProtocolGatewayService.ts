@@ -76,9 +76,15 @@ interface ActionExecutionMeta {
 }
 
 export interface ProblemSynthesisView {
-  focus: string;
-  shared_points: string;
-  divergence: string;
+  shared_goal: string;
+  agreement_points: string[];
+  tension_points: string[];
+  primary_tension_point: string;
+  side_a_interest: string;
+  side_b_interest: string;
+  side_a_constraint: string;
+  side_b_constraint: string;
+  possible_zone_of_agreement: string;
 }
 
 export interface ProblemSynthesisEnvelope {
@@ -385,30 +391,74 @@ export class ProtocolGatewayService {
         throw new IntakeValidationError('Synthesis requires two participants.');
       }
 
-      const statements: string[] = [];
-      for (const participant of session.participants) {
-        const privateData = await this.intakeService.getPrivateIntakeData(
-          sessionId,
-          participant.telegramUserId
-        );
-        const statement =
-          privateData.view.fields[ProtocolGatewayService.PROBLEM_STATEMENT_FIELD].rawValue?.trim() ??
-          '';
-        if (!statement) {
-          throw new IntakeValidationError('Synthesis requires confirmed problem statements from both participants.');
-        }
-        statements.push(statement);
+      const partyA = session.participants.find((entry) => entry.role === 'PARTY_A');
+      const partyB = session.participants.find((entry) => entry.role === 'PARTY_B');
+      if (!partyA || !partyB) {
+        throw new IntakeValidationError('Synthesis requires exactly two participants with explicit roles.');
       }
 
-      const synthesis = buildNeutralProblemSynthesis(statements[0], statements[1]);
+      const partyAData = await this.intakeService.getPrivateIntakeData(sessionId, partyA.telegramUserId);
+      const partyBData = await this.intakeService.getPrivateIntakeData(sessionId, partyB.telegramUserId);
+      if (partyAData.view.state !== 'COMPLETED' || partyBData.view.state !== 'COMPLETED') {
+        throw new IntakeValidationError('Synthesis requires confirmed structured intake from both participants.');
+      }
+
+      const synthesis = buildStructuredProblemSynthesis(
+        {
+          facts: requireNormalized(partyAData.view.fields.facts.normalizedValue, 'party_a.facts'),
+          tension: requireNormalized(
+            partyAData.view.fields.interpretations.normalizedValue,
+            'party_a.tension_point'
+          ),
+          interest: requireNormalized(
+            partyAData.view.fields.interests.normalizedValue,
+            'party_a.important_need_or_interest'
+          ),
+          constraint: requireNormalized(
+            partyAData.view.fields.constraints.normalizedValue,
+            'party_a.hard_constraint'
+          ),
+          desiredOutcome: requireNormalized(
+            partyAData.view.fields.desired_outcome.normalizedValue,
+            'party_a.desired_outcome'
+          ),
+          flexibility: requireNormalized(
+            partyAData.view.fields.acceptable_concessions.normalizedValue,
+            'party_a.acceptable_flexibility'
+          )
+        },
+        {
+          facts: requireNormalized(partyBData.view.fields.facts.normalizedValue, 'party_b.facts'),
+          tension: requireNormalized(
+            partyBData.view.fields.interpretations.normalizedValue,
+            'party_b.tension_point'
+          ),
+          interest: requireNormalized(
+            partyBData.view.fields.interests.normalizedValue,
+            'party_b.important_need_or_interest'
+          ),
+          constraint: requireNormalized(
+            partyBData.view.fields.constraints.normalizedValue,
+            'party_b.hard_constraint'
+          ),
+          desiredOutcome: requireNormalized(
+            partyBData.view.fields.desired_outcome.normalizedValue,
+            'party_b.desired_outcome'
+          ),
+          flexibility: requireNormalized(
+            partyBData.view.fields.acceptable_concessions.normalizedValue,
+            'party_b.acceptable_flexibility'
+          )
+        }
+      );
       const latest = await this.synthesisReviewRepository.findLatestProblemSynthesis(sessionId);
       const snapshot: ProblemSynthesisSnapshot = {
         id: this.idGenerator.nextId(),
         caseId: sessionId,
         version: latest ? latest.version + 1 : 1,
-        focus: synthesis.focus,
-        sharedPoints: synthesis.shared_points,
-        divergence: synthesis.divergence,
+        focus: synthesis.shared_goal,
+        sharedPoints: synthesis.agreement_points.join(' | '),
+        divergence: synthesis.primary_tension_point,
         createdAt: this.clock.now()
       };
       await this.synthesisReviewRepository.saveProblemSynthesis(snapshot);
@@ -883,8 +933,25 @@ export class ProtocolGatewayService {
   }
 }
 
-const extractSynthesisThemes = (statement: string): string[] => {
-  const normalized = statement.toLowerCase();
+type ParticipantSynthesisInput = {
+  facts: string;
+  tension: string;
+  interest: string;
+  constraint: string;
+  desiredOutcome: string;
+  flexibility: string;
+};
+
+const requireNormalized = (value: string | null, field: string): string => {
+  const normalized = value?.trim() ?? '';
+  if (!normalized) {
+    throw new IntakeValidationError(`Missing confirmed intake field: ${field}.`);
+  }
+  return normalized;
+};
+
+const extractSynthesisThemes = (value: string): string[] => {
+  const normalized = value.toLowerCase();
   const found = synthesisThemes
     .filter((theme) => theme.keywords.some((pattern) => pattern.test(normalized)))
     .map((theme) => theme.label);
@@ -901,35 +968,87 @@ const asHumanList = (values: string[]): string =>
     ? values[0] ?? ''
     : `${values.slice(0, -1).join(', ')} и ${values[values.length - 1]}`;
 
-const buildNeutralProblemSynthesis = (
-  participantAStatement: string,
-  participantBStatement: string
+const unique = (values: string[]): string[] => [...new Set(values)];
+
+const themesFromInput = (input: ParticipantSynthesisInput) => ({
+  goals: unique(extractSynthesisThemes(`${input.desiredOutcome} ${input.flexibility}`)),
+  interests: unique(extractSynthesisThemes(input.interest)),
+  tension: unique(extractSynthesisThemes(`${input.tension} ${input.facts}`)),
+  constraints: unique(extractSynthesisThemes(input.constraint))
+});
+
+const buildStructuredProblemSynthesis = (
+  partyA: ParticipantSynthesisInput,
+  partyB: ParticipantSynthesisInput
 ): ProblemSynthesisView => {
-  const aThemes = new Set(extractSynthesisThemes(participantAStatement));
-  const bThemes = new Set(extractSynthesisThemes(participantBStatement));
+  const a = themesFromInput(partyA);
+  const b = themesFromInput(partyB);
 
-  const union = [...new Set([...aThemes, ...bThemes])];
-  const shared = union.filter((theme) => aThemes.has(theme) && bThemes.has(theme));
-  const onlyA = union.filter((theme) => aThemes.has(theme) && !bThemes.has(theme));
-  const onlyB = union.filter((theme) => bThemes.has(theme) && !aThemes.has(theme));
+  const sharedGoals = a.goals.filter((theme) => b.goals.includes(theme));
+  const sharedInterests = a.interests.filter((theme) => b.interests.includes(theme));
+  const agreementPoints = unique([...sharedGoals, ...sharedInterests]);
 
-  const focus = `согласовать ${asHumanList(union)}.`;
-  const sharedPoints =
-    shared.length > 0
-      ? `обе стороны отмечают важность: ${asHumanList(shared)}.`
-      : 'обе стороны хотят снизить напряжение и зафиксировать понятные правила.';
+  const aTensionOnly = a.tension.filter((theme) => !b.tension.includes(theme));
+  const bTensionOnly = b.tension.filter((theme) => !a.tension.includes(theme));
+  const tensionPoints = unique([...aTensionOnly, ...bTensionOnly]);
+  const primaryTensionPoint =
+    tensionPoints[0] ??
+    'разные ожидания к деталям взаимодействия и способу фиксации договорённостей';
 
-  let divergence = 'пока различаются акценты по деталям и приоритетам.';
-  if (onlyA.length > 0 && onlyB.length > 0) {
-    divergence = `есть разные акценты: часть ожиданий про ${asHumanList(onlyA)}, а часть — про ${asHumanList(onlyB)}.`;
-  } else if (onlyA.length > 0 || onlyB.length > 0) {
-    const unique = onlyA.length > 0 ? onlyA : onlyB;
-    divergence = `нужно отдельно согласовать ожидания по теме: ${asHumanList(unique)}.`;
-  }
+  const sharedConstraintRisk = a.constraints.filter((theme) => b.constraints.includes(theme));
+  const possibleZone = unique(
+    agreementPoints.length > 0
+      ? [...agreementPoints]
+      : [...a.goals.filter((theme) => b.interests.includes(theme)), ...b.goals.filter((theme) => a.interests.includes(theme))]
+  );
+
+  const sharedGoal =
+    sharedGoals.length > 0
+      ? `договориться о понятных правилах по темам: ${asHumanList(sharedGoals)}`
+      : 'договориться о рабочем формате взаимодействия и ожидаемом результате';
+
+  const zoneSummary =
+    possibleZone.length > 0
+      ? `начать с тем: ${asHumanList(possibleZone)} и зафиксировать общий порядок действий`
+      : 'зафиксировать минимальные правила, которые учитывают ограничения обеих сторон';
+
+  const sideAInterest =
+    a.interests.length > 0
+      ? `стабильность по темам: ${asHumanList(a.interests)}`
+      : 'предсказуемый процесс и понятные ожидания';
+  const sideBInterest =
+    b.interests.length > 0
+      ? `стабильность по темам: ${asHumanList(b.interests)}`
+      : 'предсказуемый процесс и понятные ожидания';
+
+  const sideAConstraint =
+    a.constraints.length > 0
+      ? `неподходящими выглядят варианты по темам: ${asHumanList(a.constraints)}`
+      : 'нужны чёткие рамки и соблюдение договорённостей';
+  const sideBConstraint =
+    b.constraints.length > 0
+      ? `неподходящими выглядят варианты по темам: ${asHumanList(b.constraints)}`
+      : 'нужны чёткие рамки и соблюдение договорённостей';
+
+  const tensionWithConstraints =
+    sharedConstraintRisk.length > 0
+      ? unique([primaryTensionPoint, ...sharedConstraintRisk])
+      : unique([primaryTensionPoint, ...tensionPoints.slice(1)]);
+
+  const finalAgreementPoints =
+    agreementPoints.length > 0
+      ? agreementPoints
+      : ['обе стороны хотят снизить напряжение и прийти к выполнимой договорённости'];
 
   return {
-    focus,
-    shared_points: sharedPoints,
-    divergence
+    shared_goal: sharedGoal,
+    agreement_points: finalAgreementPoints,
+    tension_points: tensionWithConstraints,
+    primary_tension_point: primaryTensionPoint,
+    side_a_interest: sideAInterest,
+    side_b_interest: sideBInterest,
+    side_a_constraint: sideAConstraint,
+    side_b_constraint: sideBConstraint,
+    possible_zone_of_agreement: zoneSummary
   };
 };

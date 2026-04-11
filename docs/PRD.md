@@ -27,11 +27,22 @@ Help two participants resolve conflict through private structured intake, neutra
   - concurrency and replay-focused transport tests
   - Postgres runtime integration test suite (env-gated)
 - Minimal post-consent shared picture step:
-  - built only from both confirmed participant problem statements
+  - built only from both confirmed structured intake models
   - shared neutral 3-block synthesis text for both sides
   - private clarification capture (`Нет, нужно уточнить`) without auto re-synthesis
   - persisted synthesis review signals (`CONFIRM` / `CLARIFY`) for dogfood validation
   - debug synthesis review summary (`both_confirmed`, `one_confirmed_one_clarified`, `both_clarified`)
+
+## Phase 2 synthesis shape (implemented)
+- shared_goal
+- agreement_points
+- tension_points
+- primary_tension_point
+- side_a_interest
+- side_b_interest
+- side_a_constraint
+- side_b_constraint
+- possible_zone_of_agreement
 
 ## Intake UX (current guided flow)
 - Private intake is collected one focused question at a time.

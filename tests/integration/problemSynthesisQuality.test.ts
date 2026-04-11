@@ -5,7 +5,10 @@ import { MediationService } from '../../src/application/services/MediationServic
 import { NegotiationService } from '../../src/application/services/NegotiationService.js';
 import { DeterministicProposalMapper } from '../../src/application/services/DeterministicProposalMapper.js';
 import { ProposalGenerationService } from '../../src/application/services/ProposalGenerationService.js';
-import { ProtocolGatewayService } from '../../src/application/services/ProtocolGatewayService.js';
+import {
+  ProtocolGatewayService,
+  StructuredIntakeAnswerInput
+} from '../../src/application/services/ProtocolGatewayService.js';
 import { DeterministicSynthesisMapper } from '../../src/application/services/DeterministicSynthesisMapper.js';
 import { SynthesisService } from '../../src/application/services/SynthesisService.js';
 import { InMemoryIntakeRepository } from '../../src/infrastructure/repositories/InMemoryIntakeRepository.js';
@@ -132,6 +135,44 @@ const setupGateway = async () => {
   return { gateway, sessionId: created.session_id };
 };
 
+const completeStructuredIntake = async (
+  gateway: ProtocolGatewayService,
+  sessionId: string,
+  telegramUserId: string,
+  input: {
+    situation_facts: string;
+    tension_point: string;
+    important_need_or_interest: string;
+    hard_constraint: string;
+    desired_outcome: string;
+    acceptable_flexibility: string;
+  }
+) => {
+  await gateway.getIntakeProgress(sessionId, telegramUserId);
+  const answers: StructuredIntakeAnswerInput[] = [
+    { field: 'facts', value: input.situation_facts },
+    { field: 'interpretations', value: input.tension_point },
+    { field: 'interests', value: input.important_need_or_interest },
+    { field: 'constraints', value: input.hard_constraint },
+    { field: 'boundaries', value: input.hard_constraint },
+    { field: 'desired_outcome', value: input.desired_outcome },
+    { field: 'acceptable_concessions', value: input.acceptable_flexibility },
+    { field: 'non_negotiables', value: input.hard_constraint }
+  ];
+  const view = await gateway.submitIntakeAnswers(
+    actionCtx('submit_intake_answers', sessionId, telegramUserId, { count: answers.length }),
+    sessionId,
+    telegramUserId,
+    answers
+  );
+  await gateway.confirmSummary(
+    actionCtx('confirm_summary', sessionId, telegramUserId, {}),
+    sessionId,
+    telegramUserId
+  );
+  return view;
+};
+
 const assertNeutralNoLeakage = (
   synthesisText: string,
   sideAMarker: string,
@@ -150,18 +191,22 @@ describe('problem synthesis quality fixtures', () => {
     const aMarker = 'УНИКАЛЬНЫЙ_МАРКЕР_A_11';
     const bMarker = 'УНИКАЛЬНЫЙ_МАРКЕР_B_22';
 
-    await gateway.submitProblemDefinition(
-      actionCtx('problem_definition', sessionId, '101', { text: `Хотим согласовать сроки и оплату ${aMarker}` }),
-      sessionId,
-      '101',
-      `Хотим согласовать сроки и оплату ${aMarker}`
-    );
-    await gateway.submitProblemDefinition(
-      actionCtx('problem_definition', sessionId, '102', { text: `Нужно договориться по дедлайнам и оплате ${bMarker}` }),
-      sessionId,
-      '102',
-      `Нужно договориться по дедлайнам и оплате ${bMarker}`
-    );
+    await completeStructuredIntake(gateway, sessionId, '101', {
+      situation_facts: `Сейчас часто сдвигаются сроки и бюджет ${aMarker}`,
+      tension_point: 'Напрягает отсутствие предсказуемости по дедлайнам',
+      important_need_or_interest: 'Важно заранее понимать план и роли',
+      hard_constraint: 'Не подойдут резкие переносы без предупреждения',
+      desired_outcome: 'Нужен прозрачный график и понятная оплата',
+      acceptable_flexibility: 'Готовы обсуждать перенос второстепенных задач'
+    });
+    await completeStructuredIntake(gateway, sessionId, '102', {
+      situation_facts: `Есть риск срыва дедлайнов и перерасхода ${bMarker}`,
+      tension_point: 'Напрягает, что договорённости часто плавают',
+      important_need_or_interest: 'Важно фиксировать ответственность заранее',
+      hard_constraint: 'Не подойдёт формат без заранее оговорённых рамок',
+      desired_outcome: 'Нужен стабильный ритм работы и ясные условия',
+      acceptable_flexibility: 'Готовы обсуждать перенос части этапов'
+    });
 
     const synthesis = await gateway.buildProblemSynthesis(
       actionCtx('problem_synthesis', sessionId, '101', {}),
@@ -170,9 +215,10 @@ describe('problem synthesis quality fixtures', () => {
     );
     const text = JSON.stringify(synthesis.synthesis);
     assertNeutralNoLeakage(text, aMarker, bMarker);
-    expect(synthesis.synthesis.focus).toContain('согласовать');
-    expect(synthesis.synthesis.shared_points.length).toBeGreaterThan(10);
-    expect(synthesis.synthesis.divergence.length).toBeGreaterThan(10);
+    expect(synthesis.synthesis.shared_goal.length).toBeGreaterThan(10);
+    expect(synthesis.synthesis.agreement_points.length).toBeGreaterThan(0);
+    expect(synthesis.synthesis.primary_tension_point.length).toBeGreaterThan(5);
+    expect(synthesis.synthesis.possible_zone_of_agreement.length).toBeGreaterThan(10);
 
     await gateway.recordProblemSynthesisReaction(
       actionCtx('synthesis_confirm', sessionId, '101', { reaction: 'confirm' }),
@@ -195,18 +241,22 @@ describe('problem synthesis quality fixtures', () => {
     const aMarker = 'A_SIDE_PRIVATE_PHRASE_777';
     const bMarker = 'B_SIDE_PRIVATE_PHRASE_888';
 
-    await gateway.submitProblemDefinition(
-      actionCtx('problem_definition', sessionId, '101', { text: `Хочу ясные роли и формат работы ${aMarker}` }),
-      sessionId,
-      '101',
-      `Хочу ясные роли и формат работы ${aMarker}`
-    );
-    await gateway.submitProblemDefinition(
-      actionCtx('problem_definition', sessionId, '102', { text: `Для меня важны уважительный тон и границы ${bMarker}` }),
-      sessionId,
-      '102',
-      `Для меня важны уважительный тон и границы ${bMarker}`
-    );
+    await completeStructuredIntake(gateway, sessionId, '101', {
+      situation_facts: `Нужен понятный формат работы ${aMarker}`,
+      tension_point: 'Напрягают изменения ролей в последний момент',
+      important_need_or_interest: 'Важно чёткое разделение ответственности',
+      hard_constraint: 'Не подойдёт размытая зона ответственности',
+      desired_outcome: 'Нужны зафиксированные роли и процесс',
+      acceptable_flexibility: 'Готовы обсуждать небольшую ротацию задач'
+    });
+    await completeStructuredIntake(gateway, sessionId, '102', {
+      situation_facts: `Хочу более уважительный тон общения ${bMarker}`,
+      tension_point: 'Напрягает жёсткая коммуникация в спорных моментах',
+      important_need_or_interest: 'Важно уважительное взаимодействие',
+      hard_constraint: 'Не подойдёт давление в диалоге',
+      desired_outcome: 'Нужны ясные договорённости и спокойный тон',
+      acceptable_flexibility: 'Готовы обсуждать формат фиксации договорённостей'
+    });
 
     const synthesis = await gateway.buildProblemSynthesis(
       actionCtx('problem_synthesis', sessionId, '102', {}),
@@ -215,9 +265,10 @@ describe('problem synthesis quality fixtures', () => {
     );
     const text = JSON.stringify(synthesis.synthesis);
     assertNeutralNoLeakage(text, aMarker, bMarker);
-    expect(synthesis.synthesis.focus.length).toBeGreaterThan(10);
-    expect(synthesis.synthesis.shared_points.length).toBeGreaterThan(10);
-    expect(synthesis.synthesis.divergence.length).toBeGreaterThan(10);
+    expect(synthesis.synthesis.shared_goal.length).toBeGreaterThan(10);
+    expect(synthesis.synthesis.tension_points.length).toBeGreaterThan(0);
+    expect(synthesis.synthesis.side_a_interest.length).toBeGreaterThan(10);
+    expect(synthesis.synthesis.side_b_constraint.length).toBeGreaterThan(10);
 
     await gateway.recordProblemSynthesisReaction(
       actionCtx('synthesis_clarify', sessionId, '101', { reaction: 'clarify' }),
@@ -240,18 +291,22 @@ describe('problem synthesis quality fixtures', () => {
     const aMarker = 'PRIVATE_A_CONFLICT_123';
     const bMarker = 'PRIVATE_B_CONFLICT_456';
 
-    await gateway.submitProblemDefinition(
-      actionCtx('problem_definition', sessionId, '101', { text: `Нужно быстро закрыть вопрос по срокам ${aMarker}` }),
-      sessionId,
-      '101',
-      `Нужно быстро закрыть вопрос по срокам ${aMarker}`
-    );
-    await gateway.submitProblemDefinition(
-      actionCtx('problem_definition', sessionId, '102', { text: `Сроки вторичны, главное качество и роли ${bMarker}` }),
-      sessionId,
-      '102',
-      `Сроки вторичны, главное качество и роли ${bMarker}`
-    );
+    await completeStructuredIntake(gateway, sessionId, '101', {
+      situation_facts: `Нужно быстро закрыть вопрос со сроками ${aMarker}`,
+      tension_point: 'Напрягает затягивание решений',
+      important_need_or_interest: 'Важно ускорить согласование',
+      hard_constraint: 'Не подойдёт неопределённый дедлайн',
+      desired_outcome: 'Нужен быстрый и финальный план',
+      acceptable_flexibility: 'Готовы двигать вторичные задачи'
+    });
+    await completeStructuredIntake(gateway, sessionId, '102', {
+      situation_facts: `Сроки вторичны, главное качество и роли ${bMarker}`,
+      tension_point: 'Напрягает просадка качества при спешке',
+      important_need_or_interest: 'Важно сохранить качество результата',
+      hard_constraint: 'Не подойдёт ускорение за счёт качества',
+      desired_outcome: 'Нужен сбалансированный ритм без потери качества',
+      acceptable_flexibility: 'Готовы обсуждать промежуточные дедлайны'
+    });
 
     const synthesis = await gateway.buildProblemSynthesis(
       actionCtx('problem_synthesis', sessionId, '101', {}),
@@ -260,6 +315,7 @@ describe('problem synthesis quality fixtures', () => {
     );
     const text = JSON.stringify(synthesis.synthesis);
     assertNeutralNoLeakage(text, aMarker, bMarker);
+    expect(synthesis.synthesis.primary_tension_point.length).toBeGreaterThan(5);
 
     await gateway.recordProblemSynthesisReaction(
       actionCtx('synthesis_confirm', sessionId, '101', { reaction: 'confirm' }),
