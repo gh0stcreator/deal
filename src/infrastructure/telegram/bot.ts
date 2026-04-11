@@ -1074,11 +1074,26 @@ export const buildTelegramBot = (
         action_type: 'select_preferred'
       });
     } catch (error) {
+      if (error instanceof DomainError && error.code === 'INTAKE_NOT_FOUND') {
+        pendingProblemSession.set(telegramUserId, sessionId);
+        await sendReplyWithRetry(
+          ctx,
+          [
+            'Не вижу вашу формулировку в этой договорённости.',
+            'Отправьте коротко, в чём сейчас основная проблема.'
+          ].join('\n'),
+          {
+            correlation_id: makeCorrelationId(ctx),
+            action_type: 'problem_confirm'
+          }
+        );
+        return;
+      }
+
       if (
         error instanceof DomainError &&
-        (error.code === 'INTAKE_NOT_FOUND' ||
-          (error.code === 'INTAKE_VALIDATION_ERROR' &&
-            error.message.includes('Synthesis requires confirmed problem statements')))
+        error.code === 'INTAKE_VALIDATION_ERROR' &&
+        error.message.includes('Synthesis requires confirmed problem statements')
       ) {
         await sendReplyWithRetry(
           ctx,
