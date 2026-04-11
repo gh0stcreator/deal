@@ -532,33 +532,35 @@ describe('transport adapters', () => {
     await sendTelegramCommand(bot, 65, 102, `/start join_${inviteToken}`);
     expect(replies.some((entry) => entry.includes('Ты подключился к договорённости.'))).toBe(true);
     expect(replies.some((entry) => entry.includes('Второй человек подключился.'))).toBe(true);
-    expect(
-      replies.some((entry) => entry.includes('Теперь вы оба можете подтвердить участие.'))
-    ).toBe(true);
+    expect(replies.some((entry) => entry.includes('Ждём, пока он подтвердит участие.'))).toBe(true);
+    const creatorNotifyPayload = sentPayloads.find((payload) =>
+      payload.text.includes('Ждём, пока он подтвердит участие.')
+    );
+    expect(creatorNotifyPayload).toBeTruthy();
+    const creatorNotifyActions = JSON.stringify(creatorNotifyPayload?.reply_markup);
+    expect(creatorNotifyActions).toContain('status:');
+    expect(creatorNotifyActions).not.toContain('consent:');
 
-    await sendTelegramCallback(bot, 66, 101, `consent:${sessionId}`);
-    expect(replies[replies.length - 1]).toContain('Ты подтвердил участие');
-
-    await sendTelegramCallback(bot, 67, 102, `consent:${sessionId}`);
+    await sendTelegramCallback(bot, 66, 102, `consent:${sessionId}`);
     expect(replies.some((entry) => entry.includes('Готово. Вы оба подтвердили участие'))).toBe(true);
     expect(replies[replies.length - 1]).toContain('Важно:');
     expect(replies[replies.length - 1]).toContain('В чём сейчас основная проблема?');
 
-    await sendTelegramText(bot, 68, 101, 'Хотим договориться о сроках и оплате');
+    await sendTelegramText(bot, 67, 101, 'Хотим договориться о сроках и оплате');
     expect(replies[replies.length - 1]).toContain('Я записал это так:');
     expect(replies[replies.length - 1]).toContain('Всё верно?');
 
-    await sendTelegramCallback(bot, 69, 101, `problem:edit:${sessionId}`);
+    await sendTelegramCallback(bot, 68, 101, `problem:edit:${sessionId}`);
     expect(replies[replies.length - 1]).toContain('Отправь исправленный вариант.');
-    await sendTelegramText(bot, 70, 101, 'Хотим договориться о дедлайнах и оплате');
+    await sendTelegramText(bot, 69, 101, 'Хотим договориться о дедлайнах и оплате');
     expect(replies[replies.length - 1]).toContain('Я записал это так:');
-    await sendTelegramCallback(bot, 71, 101, `problem:confirm:${sessionId}`);
+    await sendTelegramCallback(bot, 70, 101, `problem:confirm:${sessionId}`);
     expect(replies[replies.length - 1]).toContain('Ты подтвердил свою формулировку.');
     expect(replies[replies.length - 1]).toContain('Ждём второго человека.');
 
-    await sendTelegramText(bot, 72, 102, 'Нужно договориться о формате и дедлайнах');
+    await sendTelegramText(bot, 71, 102, 'Нужно договориться о формате и дедлайнах');
     expect(replies[replies.length - 1]).toContain('Я записал это так:');
-    await sendTelegramCallback(bot, 73, 102, `problem:confirm:${sessionId}`);
+    await sendTelegramCallback(bot, 72, 102, `problem:confirm:${sessionId}`);
     expect(replies.filter((entry) => entry.includes('Похоже, вы хотите договориться вот о чём:')).length).toBeGreaterThanOrEqual(2);
     expect(replies.filter((entry) => entry.includes('Общее между вашими позициями:')).length).toBeGreaterThanOrEqual(2);
     expect(replies.filter((entry) => entry.includes('Где пока есть расхождение:')).length).toBeGreaterThanOrEqual(2);
@@ -571,11 +573,11 @@ describe('transport adapters', () => {
     expect(partyBData.view.fields.facts.rawValue).toContain('формате и дедлайнах');
     expect(partyAData.view.fields.facts.rawValue).not.toBe(partyBData.view.fields.facts.rawValue);
 
-    await sendTelegramCallback(bot, 74, 101, `synthesis:clarify:${sessionId}`);
+    await sendTelegramCallback(bot, 73, 101, `synthesis:clarify:${sessionId}`);
     expect(replies[replies.length - 1]).toContain('Что именно я понял не так?');
-    await sendTelegramText(bot, 75, 101, 'Нужно добавить, что важен способ коммуникации');
+    await sendTelegramText(bot, 74, 101, 'Нужно добавить, что важен способ коммуникации');
     expect(replies[replies.length - 1]).toContain('Принял уточнение. Сохранил отдельно.');
-    await sendTelegramCallback(bot, 76, 102, `synthesis:ok:${sessionId}`);
+    await sendTelegramCallback(bot, 75, 102, `synthesis:ok:${sessionId}`);
     expect(replies[replies.length - 1]).toContain('Спасибо. Зафиксировал.');
 
     const partyADataAfterClarification = await intakeService.getPrivateIntakeData(sessionId!, '101');

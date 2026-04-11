@@ -7,7 +7,7 @@ import {
 } from '../../application/services/ProtocolGatewayService.js';
 import { SuggestEditOperations } from '../../domain/negotiation/types.js';
 import { ProposalVariantTypes } from '../../domain/proposal/types.js';
-import { SessionStates } from '../../domain/session/types.js';
+import { ParticipantRoles, SessionStates } from '../../domain/session/types.js';
 import { DomainError } from '../../domain/session/errors.js';
 import { mapTelegramErrorText } from '../transport/errorMapping.js';
 import { InMemoryRateLimiter } from '../transport/rateLimiter.js';
@@ -88,6 +88,9 @@ const consentKeyboard = (sessionId: string) =>
     .text('Подтвердить участие', `consent:${sessionId}`)
     .row()
     .text('Посмотреть статус', `status:${sessionId}`);
+
+const statusOnlyKeyboard = (sessionId: string) =>
+  new InlineKeyboard().text('Посмотреть статус', `status:${sessionId}`);
 
 const createOnlyKeyboard = () =>
   new InlineKeyboard().text('Создать договорённость', 'menu:create');
@@ -433,6 +436,8 @@ export const buildTelegramBot = (
       const consentPending =
         session.state === SessionStates.CONSENT_PENDING && self && !self.consentGrantedAt;
       const consentCount = session.participants.filter((participant) => Boolean(participant.consentGrantedAt)).length;
+      const isCreator = self?.role === ParticipantRoles.PARTY_A;
+      const showConsentAction = consentPending && !isCreator;
 
       const statusLines = ['Текущий статус:'];
       if (session.participants.length === 1) {
@@ -441,6 +446,9 @@ export const buildTelegramBot = (
       } else if (consentCount === 2) {
         statusLines.push('Обе стороны подтвердили участие.');
         statusLines.push('Дальше: переходите к обсуждению решения.');
+      } else if (isCreator) {
+        statusLines.push('Второй человек подключился.');
+        statusLines.push('Ждём, пока он подтвердит участие.');
       } else if (self?.consentGrantedAt) {
         statusLines.push('Ты подтвердил участие.');
         statusLines.push('Ждём второго человека.');
@@ -460,7 +468,7 @@ export const buildTelegramBot = (
           correlation_id: makeCorrelationId(ctx),
           action_type: 'session_status'
         },
-        consentPending ? { reply_markup: consentKeyboard(sessionId) } : undefined
+        showConsentAction ? { reply_markup: consentKeyboard(sessionId) } : undefined
       );
     } catch (error) {
       await sendReplyWithRetry(ctx, mapTelegramErrorText(error), {
@@ -524,18 +532,40 @@ export const buildTelegramBot = (
 
       if (result.state === SessionStates.CONSENT_PENDING) {
         const session = await gateway.getSessionStatus(result.session_id, telegramUserId);
+        const creator = session.participants.find((participant) => participant.role === ParticipantRoles.PARTY_A);
+        if (creator) {
+          try {
+            await gateway.giveConsent(
+              {
+                correlation_id: `tg:auto_consent:${result.session_id}:${creator.telegramUserId}`,
+                channel: 'TELEGRAM',
+                idempotency_key: `tg:auto_consent:${result.session_id}:${creator.telegramUserId}`,
+                action_type: 'auto_give_consent_creator',
+                case_id: result.session_id,
+                participant_id: creator.telegramUserId,
+                payload: { session_id: result.session_id, actor: 'creator_auto' }
+              },
+              result.session_id,
+              creator.telegramUserId
+            );
+          } catch (error) {
+            if (!(error instanceof DomainError && error.code === 'CONSENT_ALREADY_GRANTED')) {
+              throw error;
+            }
+          }
+        }
         for (const participant of session.participants) {
           if (participant.telegramUserId === telegramUserId) {
             continue;
           }
           await sendDirectWithRetry(
             participant.telegramUserId,
-            ['Второй человек подключился.', 'Теперь вы оба можете подтвердить участие.'].join('\n'),
+            ['Второй человек подключился.', 'Ждём, пока он подтвердит участие.'].join('\n'),
             {
               correlation_id: `tg:join_notify:${result.session_id}:${participant.telegramUserId}`,
               action_type: 'join_notify_creator'
             },
-            { reply_markup: consentKeyboard(result.session_id) }
+            { reply_markup: statusOnlyKeyboard(result.session_id) }
           );
         }
       }
