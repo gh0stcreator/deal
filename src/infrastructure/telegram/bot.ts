@@ -23,6 +23,7 @@ const JOIN_ATTEMPT_LIMIT = 8;
 const INVALID_COMMAND_LIMIT = 10;
 
 type PendingInputKind = 'JOIN_TOKEN' | 'CREATE_TOPIC';
+type CreateTopicDraftStage = 'DRAFT_REVIEW' | 'FINAL_CONFIRM';
 
 const parseArgs = (text: string | undefined): string[] => {
   if (!text) {
@@ -175,6 +176,7 @@ export const buildTelegramBot = (
   const sleep =
     options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const pendingInput = new Map<string, PendingInputKind>();
+  const pendingCreateTopicDraft = new Map<string, { topic: string; stage: CreateTopicDraftStage }>();
   const pendingProblemSession = new Map<string, string>();
   const pendingSynthesisClarificationSession = new Map<string, string>();
   const problemConfirmed = new Set<string>();
@@ -375,6 +377,18 @@ export const buildTelegramBot = (
       .text('Да, верно', `problem:confirm:${sessionId}`)
       .row()
       .text('Хочу поправить', `problem:edit:${sessionId}`);
+
+  const createTopicDraftKeyboard = () =>
+    new InlineKeyboard()
+      .text('Да, отправить', 'create_topic:confirm_draft')
+      .row()
+      .text('Хочу переформулировать', 'create_topic:rephrase');
+
+  const createTopicFinalKeyboard = () =>
+    new InlineKeyboard()
+      .text('Да, отправить', 'create_topic:confirm_final')
+      .row()
+      .text('Нет, изменить', 'create_topic:edit_final');
 
   const synthesisFeedbackKeyboard = (sessionId: string) =>
     new InlineKeyboard()
@@ -704,6 +718,7 @@ export const buildTelegramBot = (
     }
 
     pendingInput.delete(telegramUserId);
+    pendingCreateTopicDraft.delete(telegramUserId);
     await sendReplyWithRetry(
       ctx,
       [
@@ -731,6 +746,7 @@ export const buildTelegramBot = (
   bot.command('create_session', async (ctx) => {
     const telegramUserId = userIdFromCtx(ctx);
     pendingInput.set(telegramUserId, 'CREATE_TOPIC');
+    pendingCreateTopicDraft.delete(telegramUserId);
     await sendReplyWithRetry(
       ctx,
       'О чём хотите договориться? Опиши коротко.',
@@ -1262,6 +1278,7 @@ export const buildTelegramBot = (
 
     if (action === 'create') {
       pendingInput.set(telegramUserId, 'CREATE_TOPIC');
+      pendingCreateTopicDraft.delete(telegramUserId);
       await sendReplyWithRetry(
         ctx,
         'О чём хотите договориться? Опиши коротко.',
@@ -1398,6 +1415,61 @@ export const buildTelegramBot = (
         action_type: 'problem_confirm'
       }
     );
+  });
+
+  bot.callbackQuery(/^create_topic:(confirm_draft|rephrase|confirm_final|edit_final)$/, async (ctx) => {
+    await safeAnswerCallback(ctx);
+    const telegramUserId = userIdFromCtx(ctx);
+    const action = ctx.match[1];
+    const draft = pendingCreateTopicDraft.get(telegramUserId);
+
+    if (!draft) {
+      pendingInput.set(telegramUserId, 'CREATE_TOPIC');
+      await sendReplyWithRetry(
+        ctx,
+        'О чём хотите договориться? Опиши коротко.',
+        {
+          correlation_id: makeCorrelationId(ctx),
+          action_type: 'create_topic_prompt'
+        }
+      );
+      return;
+    }
+
+    if (action === 'rephrase' || action === 'edit_final') {
+      pendingCreateTopicDraft.delete(telegramUserId);
+      pendingInput.set(telegramUserId, 'CREATE_TOPIC');
+      await sendReplyWithRetry(
+        ctx,
+        'Отправь формулировку ещё раз.',
+        {
+          correlation_id: makeCorrelationId(ctx),
+          action_type: 'create_topic_rephrase'
+        }
+      );
+      return;
+    }
+
+    if (action === 'confirm_draft') {
+      pendingCreateTopicDraft.set(telegramUserId, { topic: draft.topic, stage: 'FINAL_CONFIRM' });
+      await sendReplyWithRetry(
+        ctx,
+        ['Я отправлю это второму человеку как тему договорённости:', `«${draft.topic}»`, '', 'Отправляем?'].join('\n'),
+        {
+          correlation_id: makeCorrelationId(ctx),
+          action_type: 'create_topic_final_confirm'
+        },
+        { reply_markup: createTopicFinalKeyboard() }
+      );
+      return;
+    }
+
+    const initiatorName = (ctx.from?.first_name ?? 'Кто-то').replace(/\s+/g, ' ').trim();
+    const created = await createSessionFlow(ctx, telegramUserId, draft.topic, initiatorName || 'Кто-то');
+    if (created) {
+      pendingInput.delete(telegramUserId);
+      pendingCreateTopicDraft.delete(telegramUserId);
+    }
   });
 
   bot.callbackQuery(/^synthesis:ok:([A-Za-z0-9_-]{3,})$/, async (ctx) => {
@@ -1680,11 +1752,16 @@ export const buildTelegramBot = (
         return;
       }
 
-      const initiatorName = (ctx.from?.first_name ?? 'Кто-то').replace(/\s+/g, ' ').trim();
-      const created = await createSessionFlow(ctx, telegramUserId, topic, initiatorName || 'Кто-то');
-      if (created) {
-        pendingInput.delete(telegramUserId);
-      }
+      pendingCreateTopicDraft.set(telegramUserId, { topic, stage: 'DRAFT_REVIEW' });
+      await sendReplyWithRetry(
+        ctx,
+        ['Я понял так:', `«${topic}»`, '', 'Это то, что вы хотите обсудить?'].join('\n'),
+        {
+          correlation_id: makeCorrelationId(ctx),
+          action_type: 'create_topic_draft'
+        },
+        { reply_markup: createTopicDraftKeyboard() }
+      );
       return;
     }
 
