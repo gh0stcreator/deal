@@ -1403,6 +1403,18 @@ export const buildTelegramBot = (
       }
 
       const session = await gateway.getSessionStatus(sessionId, telegramUserId);
+      if (session.participants.length < 2) {
+        await sendReplyWithRetry(
+          ctx,
+          ['Вы подтвердили свою формулировку.', 'Ждём второго человека.'].join('\n'),
+          {
+            correlation_id: makeCorrelationId(ctx),
+            action_type: 'problem_confirm'
+          }
+        );
+        return;
+      }
+
       const bothConfirmed = session.participants.every((participant) =>
         problemConfirmed.has(`${sessionId}:${participant.telegramUserId}`)
       );

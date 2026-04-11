@@ -29,6 +29,7 @@ const codeToTelegramText: Record<string, string> = {
   INTAKE_ACCESS_DENIED: 'Вы не можете сделать это сейчас.',
   PARTICIPANT_NOT_IN_SESSION: 'Вы не можете сделать это сейчас.',
   SESSION_NOT_FOUND: 'Не получилось найти договорённость.',
+  INTAKE_NOT_FOUND: 'Пока не хватает данных второй стороны. Ждём второго человека.',
   INVALID_INVITE_TOKEN: 'Приглашение недействительно или устарело.',
   EXPIRED_INVITE_TOKEN: 'Приглашение недействительно или устарело.',
   INTAKE_CONFLICT: 'Вы не можете сделать это сейчас.',
