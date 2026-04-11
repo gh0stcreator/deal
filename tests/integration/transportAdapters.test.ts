@@ -543,59 +543,81 @@ describe('transport adapters', () => {
     await sendTelegramCallback(bot, 65, 102, `consent:${sessionId}`);
     expect(replies.some((entry) => entry.includes('Готово. Вы оба подтвердили участие'))).toBe(true);
     expect(replies[replies.length - 1]).toContain('Важно:');
-    expect(replies[replies.length - 1]).toContain('В чём сейчас основная проблема?');
+    expect(replies[replies.length - 1]).toContain('Что конкретно сейчас происходит?');
 
-    await sendTelegramText(bot, 66, 101, 'Хотим договориться о сроках и оплате');
-    expect(replies[replies.length - 1]).toContain('Я записал это так:');
-    expect(replies[replies.length - 1]).toContain('Всё верно?');
-
-    await sendTelegramCallback(bot, 67, 101, `problem:edit:${sessionId}`);
+    await sendTelegramText(bot, 66, 101, 'Хотим договориться о дедлайнах и оплате');
+    expect(replies[replies.length - 1]).toContain('Я понял так:');
+    expect(replies[replies.length - 1]).toContain('Я понял правильно?');
+    await sendTelegramCallback(bot, 67, 101, `intake:edit:${sessionId}:situation_facts`);
     expect(replies[replies.length - 1]).toContain('Отправьте исправленный вариант.');
-    await sendTelegramText(bot, 68, 101, 'Хотим договориться о дедлайнах и оплате');
-    expect(replies[replies.length - 1]).toContain('Я записал это так:');
-    await sendTelegramCallback(bot, 69, 101, `problem:confirm:${sessionId}`);
-    expect(replies[replies.length - 1]).toContain('Вы подтвердили свою формулировку.');
-    expect(replies[replies.length - 1]).toContain('Ждём второго человека.');
+    await sendTelegramText(bot, 68, 101, 'Хотим договориться о дедлайнах и формате оплаты');
+    expect(replies[replies.length - 1]).toContain('Я понял так:');
+    await sendTelegramCallback(bot, 69, 101, `intake:confirm:${sessionId}:situation_facts`);
+    expect(replies[replies.length - 1]).toContain('Что в этой ситуации больше всего напрягает?');
 
-    await sendTelegramText(bot, 70, 102, 'Нужно договориться о формате и дедлайнах');
-    expect(replies[replies.length - 1]).toContain('Я записал это так:');
-    await sendTelegramCallback(bot, 71, 102, `problem:confirm:${sessionId}`);
-    expect(replies.filter((entry) => entry.includes('Похоже, вы хотите договориться вот о чём:')).length).toBeGreaterThanOrEqual(2);
-    expect(replies.filter((entry) => entry.includes('Общее между вашими позициями:')).length).toBeGreaterThanOrEqual(2);
-    expect(replies.filter((entry) => entry.includes('Где пока есть расхождение:')).length).toBeGreaterThanOrEqual(2);
-    const lastPayload = sentPayloads[sentPayloads.length - 1];
-    expect(lastPayload.reply_markup).toBeTruthy();
+    const partyAFlow: Array<{
+      updateId: number;
+      text: string;
+      stepId:
+        | 'tension_point'
+        | 'important_need_or_interest'
+        | 'hard_constraint'
+        | 'desired_outcome'
+        | 'acceptable_flexibility';
+    }> = [
+      { updateId: 70, text: 'Больше всего напрягает постоянная смена сроков', stepId: 'tension_point' },
+      { updateId: 71, text: 'Важно заранее понимать план и объём', stepId: 'important_need_or_interest' },
+      { updateId: 72, text: 'Не подойдёт перенос без согласования', stepId: 'hard_constraint' },
+      { updateId: 73, text: 'Нормальный исход: согласованный график и этапы', stepId: 'desired_outcome' },
+      { updateId: 74, text: 'Готовы двигать второстепенные задачи на 1-2 дня', stepId: 'acceptable_flexibility' }
+    ];
+    for (const entry of partyAFlow) {
+      await sendTelegramText(bot, entry.updateId, 101, entry.text);
+      expect(replies[replies.length - 1]).toContain('Я понял правильно?');
+      await sendTelegramCallback(bot, entry.updateId + 100, 101, `intake:confirm:${sessionId}:${entry.stepId}`);
+    }
+    expect(replies[replies.length - 1]).toContain('Сейчас ждём второго человека.');
+
+    const partyBFlow: Array<{
+      updateId: number;
+      text: string;
+      stepId:
+        | 'situation_facts'
+        | 'tension_point'
+        | 'important_need_or_interest'
+        | 'hard_constraint'
+        | 'desired_outcome'
+        | 'acceptable_flexibility';
+    }> = [
+      { updateId: 80, text: 'Хочу понятный формат по дедлайнам и оплате', stepId: 'situation_facts' },
+      { updateId: 81, text: 'Напрягает, когда задачи всплывают в последний момент', stepId: 'tension_point' },
+      { updateId: 82, text: 'Важно сохранять предсказуемость нагрузки', stepId: 'important_need_or_interest' },
+      { updateId: 83, text: 'Не подойдёт работа без финальной фиксации условий', stepId: 'hard_constraint' },
+      { updateId: 84, text: 'Нормальный исход: понятные договорённости по этапам', stepId: 'desired_outcome' },
+      { updateId: 85, text: 'Готовы обсуждать сдвиг сроков при раннем предупреждении', stepId: 'acceptable_flexibility' }
+    ];
+    for (const entry of partyBFlow) {
+      await sendTelegramText(bot, entry.updateId, 102, entry.text);
+      expect(replies[replies.length - 1]).toContain('Я понял правильно?');
+      await sendTelegramCallback(bot, entry.updateId + 100, 102, `intake:confirm:${sessionId}:${entry.stepId}`);
+    }
 
     const partyAData = await intakeService.getPrivateIntakeData(sessionId!, '101');
     const partyBData = await intakeService.getPrivateIntakeData(sessionId!, '102');
-    expect(partyAData.view.fields.facts.rawValue).toContain('дедлайнах и оплате');
-    expect(partyBData.view.fields.facts.rawValue).toContain('формате и дедлайнах');
+    expect(partyAData.view.state).toBe('COMPLETED');
+    expect(partyBData.view.state).toBe('COMPLETED');
+    expect(partyAData.view.fields.facts.rawValue).toContain('дедлайнах и формате оплаты');
+    expect(partyBData.view.fields.facts.rawValue).toContain('дедлайнам и оплате');
     expect(partyAData.view.fields.facts.rawValue).not.toBe(partyBData.view.fields.facts.rawValue);
-
-    await sendTelegramCallback(bot, 72, 101, `synthesis:clarify:${sessionId}`);
-    expect(replies[replies.length - 1]).toContain('Что именно я понял не так?');
-    await sendTelegramText(bot, 73, 101, 'Нужно добавить, что важен способ коммуникации');
-    expect(replies[replies.length - 1]).toContain('Принял уточнение. Сохранил отдельно.');
-    await sendTelegramCallback(bot, 74, 102, `synthesis:ok:${sessionId}`);
-    expect(replies[replies.length - 1]).toContain('Спасибо. Зафиксировал.');
-
-    const partyADataAfterClarification = await intakeService.getPrivateIntakeData(sessionId!, '101');
-    const partyBDataAfterClarification = await intakeService.getPrivateIntakeData(sessionId!, '102');
     expect(
-      partyADataAfterClarification.rawMessages.some((entry) =>
-        entry.content.includes('[problem_synthesis_clarification]')
-      )
-    ).toBe(true);
-    expect(
-      partyBDataAfterClarification.rawMessages.some((entry) =>
-        entry.content.includes('[problem_synthesis_clarification]')
-      )
+      partyAData.rawMessages.some((entry) => entry.content.includes('предсказуемость нагрузки'))
     ).toBe(false);
-    const reviewSummary = await gateway.getProblemSynthesisReviewSummary(sessionId!, '101');
-    expect(reviewSummary.review_summary).toBe('one_confirmed_one_clarified');
+    expect(
+      partyBData.rawMessages.some((entry) => entry.content.includes('предсказуемость нагрузки'))
+    ).toBe(true);
 
     const finalSession = await gateway.getSessionStatus(sessionId!, '101');
-    expect(finalSession.state).toBe(SessionStates.SIDE_A_INTAKE);
+    expect(finalSession.state).toBe(SessionStates.READY_FOR_SYNTHESIS);
   });
 
   it('supports guided join via menu and plain token message', async () => {

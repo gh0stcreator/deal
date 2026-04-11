@@ -33,6 +33,18 @@ Help two participants resolve conflict through private structured intake, neutra
   - persisted synthesis review signals (`CONFIRM` / `CLARIFY`) for dogfood validation
   - debug synthesis review summary (`both_confirmed`, `one_confirmed_one_clarified`, `both_clarified`)
 
+## Intake UX (current guided flow)
+- Private intake is collected one focused question at a time.
+- Each participant confirms every answer before moving to the next question.
+- Guided mediation prompts collect:
+  - what is happening now
+  - main tension point
+  - important need/interest
+  - hard constraint
+  - acceptable outcome
+  - acceptable flexibility
+- Answers remain private and are never shown raw to the other participant.
+
 ## Structured data fields
 ### Intake fields
 - facts

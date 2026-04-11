@@ -3,8 +3,10 @@ import { SystemClock } from '../../application/ports/Clock.js';
 import { AppLogger, createNoopLogger } from '../../application/ports/AppLogger.js';
 import {
   ProblemSynthesisView,
-  ProtocolGatewayService
+  ProtocolGatewayService,
+  StructuredIntakeAnswerInput
 } from '../../application/services/ProtocolGatewayService.js';
+import { IntakeField } from '../../domain/intake/types.js';
 import { SuggestEditOperations } from '../../domain/negotiation/types.js';
 import { ProposalVariantTypes } from '../../domain/proposal/types.js';
 import { ParticipantRoles, SessionStates } from '../../domain/session/types.js';
@@ -23,6 +25,62 @@ const JOIN_ATTEMPT_LIMIT = 8;
 const INVALID_COMMAND_LIMIT = 10;
 
 type PendingInputKind = 'JOIN_TOKEN' | 'CREATE_TOPIC';
+
+type MediationIntakeStepId =
+  | 'situation_facts'
+  | 'tension_point'
+  | 'important_need_or_interest'
+  | 'hard_constraint'
+  | 'desired_outcome'
+  | 'acceptable_flexibility';
+
+interface MediationIntakeStepDefinition {
+  id: MediationIntakeStepId;
+  question: string;
+  confirmPrefix: string;
+  writes: IntakeField[];
+}
+
+const mediationIntakeSteps: MediationIntakeStepDefinition[] = [
+  {
+    id: 'situation_facts',
+    question: 'Что конкретно сейчас происходит?',
+    confirmPrefix: 'Я понял так:',
+    writes: ['facts']
+  },
+  {
+    id: 'tension_point',
+    question: 'Что в этой ситуации больше всего напрягает?',
+    confirmPrefix: 'Правильно понимаю основное напряжение:',
+    writes: ['interpretations']
+  },
+  {
+    id: 'important_need_or_interest',
+    question: 'Что для вас в этой ситуации важнее всего?',
+    confirmPrefix: 'Для вас важно:',
+    writes: ['interests']
+  },
+  {
+    id: 'hard_constraint',
+    question: 'Что для вас точно не подойдёт?',
+    confirmPrefix: 'Фиксирую ограничение:',
+    writes: ['constraints', 'boundaries']
+  },
+  {
+    id: 'desired_outcome',
+    question: 'Какой исход был бы для вас нормальным?',
+    confirmPrefix: 'Нормальный для вас исход:',
+    writes: ['desired_outcome']
+  },
+  {
+    id: 'acceptable_flexibility',
+    question: 'Где вы готовы уступить, если появится рабочий вариант?',
+    confirmPrefix: 'Готовность к компромиссу:',
+    writes: ['acceptable_concessions']
+  }
+];
+
+const mediationStepById = new Map(mediationIntakeSteps.map((step) => [step.id, step]));
 
 const parseArgs = (text: string | undefined): string[] => {
   if (!text) {
@@ -179,9 +237,13 @@ export const buildTelegramBot = (
     options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const pendingInput = new Map<string, PendingInputKind>();
   const pendingCreateTopicDraft = new Map<string, { topic: string }>();
-  const pendingProblemSession = new Map<string, string>();
+  const pendingMediationIntakeSession = new Map<string, string>();
+  const pendingMediationIntakeStep = new Map<string, MediationIntakeStepId>();
+  const pendingMediationIntakeDraft = new Map<
+    string,
+    { sessionId: string; stepId: MediationIntakeStepId; text: string }
+  >();
   const pendingSynthesisClarificationSession = new Map<string, string>();
-  const problemConfirmed = new Set<string>();
   const problemSynthesisSent = new Set<string>();
   const lastSessionByUser = new Map<string, string>();
   const lastInviteByUser = new Map<
@@ -344,36 +406,129 @@ export const buildTelegramBot = (
     return false;
   };
 
-  const askProblemDefinition = async (
+  const mediationIntakeConfirmationKeyboard = (
+    sessionId: string,
+    stepId: MediationIntakeStepId
+  ) =>
+    new InlineKeyboard()
+      .text('Да, верно', `intake:confirm:${sessionId}:${stepId}`)
+      .row()
+      .text('Хочу поправить', `intake:edit:${sessionId}:${stepId}`);
+
+  const findNextMediationIntakeStep = (
+    fields: Awaited<ReturnType<ProtocolGatewayService['getIntakeProgress']>>['fields']
+  ): MediationIntakeStepDefinition | null => {
+    for (const step of mediationIntakeSteps) {
+      const completed = step.writes.every((field) => {
+        const entry = fields[field];
+        return Boolean(entry.rawValue && entry.normalizedValue);
+      });
+      if (!completed) {
+        return step;
+      }
+    }
+    return null;
+  };
+
+  const askNextMediationIntakeQuestion = async (
     participantTelegramUserId: string,
     sessionId: string,
     source: 'direct' | 'current',
     ctx?: Context
   ) => {
-    pendingProblemSession.set(participantTelegramUserId, sessionId);
-    const text = [
-      'Важно:',
-      '',
-      'Пишите как есть, не смягчая.',
-      'Другой человек не увидит это сообщение напрямую.',
-      '',
-      'Постарайся описать:',
-      '— что сейчас происходит',
-      '— что вам важно в этой ситуации',
-      '— чего вы хотите дальше',
-      '',
-      'Дальше я сам соберу общую картину.',
-      'Это станет основой, от которой мы будем двигаться дальше.',
-      '',
-      'В чём сейчас основная проблема?'
-    ].join('\n');
+    let view = await gateway.getIntakeProgress(sessionId, participantTelegramUserId);
+    if (view.state === 'SUMMARY_PENDING_CONFIRMATION' && view.generatedSummary) {
+      view = await gateway.confirmSummary(
+        {
+          correlation_id:
+            source === 'current' && ctx
+              ? makeCorrelationId(ctx)
+              : `tg:intake_auto_confirm:${sessionId}:${participantTelegramUserId}`,
+          channel: 'TELEGRAM',
+          idempotency_key: `tg:intake_auto_confirm:${sessionId}:${participantTelegramUserId}:${view.version}`,
+          action_type: 'intake_auto_confirm',
+          case_id: sessionId,
+          participant_id: participantTelegramUserId,
+          payload: { session_id: sessionId, source: 'telegram_guided_intake' }
+        },
+        sessionId,
+        participantTelegramUserId
+      );
+    }
+    const nextStep = findNextMediationIntakeStep(view.fields);
+    if (!nextStep) {
+      pendingMediationIntakeSession.delete(participantTelegramUserId);
+      pendingMediationIntakeStep.delete(participantTelegramUserId);
+      pendingMediationIntakeDraft.delete(participantTelegramUserId);
+
+      const session = await gateway.getSessionStatus(sessionId, participantTelegramUserId);
+      const allCompleted = session.state === SessionStates.READY_FOR_SYNTHESIS;
+
+      const doneText = allCompleted
+        ? ['Спасибо. Обе стороны завершили ответы.', 'Переходим к следующему шагу.'].join('\n')
+        : ['Спасибо, ваша часть собрана.', 'Сейчас ждём второго человека.'].join('\n');
+      if (source === 'current' && ctx) {
+        await sendReplyWithRetry(ctx, doneText, {
+          correlation_id: makeCorrelationId(ctx),
+          action_type: 'mediation_intake_completed'
+        });
+        return;
+      }
+      await sendDirectWithRetry(
+        participantTelegramUserId,
+        doneText,
+        {
+          correlation_id: `tg:intake:${sessionId}:${participantTelegramUserId}`,
+          action_type: 'mediation_intake_completed'
+        }
+      );
+
+      if (allCompleted) {
+        for (const participant of session.participants) {
+          if (participant.telegramUserId === participantTelegramUserId) {
+            continue;
+          }
+          await sendDirectWithRetry(
+            participant.telegramUserId,
+            ['Спасибо. Обе стороны завершили ответы.', 'Переходим к следующему шагу.'].join('\n'),
+            {
+              correlation_id: `tg:intake_done:${sessionId}:${participant.telegramUserId}`,
+              action_type: 'mediation_intake_completed'
+            }
+          );
+        }
+      }
+      return;
+    }
+
+    pendingMediationIntakeSession.set(participantTelegramUserId, sessionId);
+    pendingMediationIntakeStep.set(participantTelegramUserId, nextStep.id);
+    const text =
+      nextStep.id === 'situation_facts'
+        ? [
+            'Важно:',
+            '',
+            'Пишите как есть, не смягчая.',
+            'Другой человек не увидит это сообщение напрямую.',
+            '',
+            'Постарайся описать:',
+            '— что сейчас происходит',
+            '— что вам важно в этой ситуации',
+            '— чего вы хотите дальше',
+            '',
+            'Дальше я сам соберу общую картину.',
+            'Это станет основой, от которой мы будем двигаться дальше.',
+            '',
+            nextStep.question
+          ].join('\n')
+        : nextStep.question;
     if (source === 'current' && ctx) {
       await sendReplyWithRetry(
         ctx,
         text,
         {
           correlation_id: makeCorrelationId(ctx),
-          action_type: 'problem_prompt'
+          action_type: 'mediation_intake_question'
         }
       );
       return;
@@ -384,16 +539,10 @@ export const buildTelegramBot = (
       text,
       {
         correlation_id: `tg:consent:${sessionId}:${participantTelegramUserId}`,
-        action_type: 'problem_prompt'
+        action_type: 'mediation_intake_question'
       }
     );
   };
-
-  const problemConfirmationKeyboard = (sessionId: string) =>
-    new InlineKeyboard()
-      .text('Да, верно', `problem:confirm:${sessionId}`)
-      .row()
-      .text('Хочу поправить', `problem:edit:${sessionId}`);
 
   const createTopicDraftKeyboard = () =>
     new InlineKeyboard()
@@ -438,6 +587,13 @@ export const buildTelegramBot = (
       if (session.participants.length === 1) {
         statusLines.push('Пока подключён только один участник.');
         statusLines.push('Дальше: дождитесь второго человека.');
+      } else if (
+        session.state === SessionStates.SIDE_A_INTAKE ||
+        session.state === SessionStates.SIDE_B_INTAKE ||
+        session.state === SessionStates.CONSENTED
+      ) {
+        statusLines.push('Сейчас каждый отвечает на вопросы отдельно.');
+        statusLines.push('Дальше: завершите ответы, чтобы можно было собрать общую картину.');
       } else if (consentCount === 2) {
         statusLines.push('Обе стороны подтвердили участие.');
         statusLines.push('Дальше: переходите к обсуждению решения.');
@@ -697,7 +853,7 @@ export const buildTelegramBot = (
       lastSessionByUser.set(telegramUserId, sessionId);
       const feedback =
         result.state === SessionStates.CONSENTED
-          ? ['Готово. Вы оба подтвердили участие.', 'Дальше: переходите к обсуждению решения.'].join('\n')
+          ? ['Готово. Вы оба подтвердили участие.', 'Дальше: ответьте на несколько коротких вопросов отдельно.'].join('\n')
           : ['Вы подтвердили участие.', 'Ждём второго человека.'].join('\n');
 
       await sendReplyWithRetry(
@@ -714,11 +870,10 @@ export const buildTelegramBot = (
         const session = await gateway.getSessionStatus(sessionId, telegramUserId);
         problemSynthesisSent.delete(sessionId);
         for (const participant of session.participants) {
-          problemConfirmed.delete(`${sessionId}:${participant.telegramUserId}`);
           if (participant.telegramUserId === telegramUserId) {
-            await askProblemDefinition(participant.telegramUserId, sessionId, 'current', ctx);
+            await askNextMediationIntakeQuestion(participant.telegramUserId, sessionId, 'current', ctx);
           } else {
-            await askProblemDefinition(participant.telegramUserId, sessionId, 'direct');
+            await askNextMediationIntakeQuestion(participant.telegramUserId, sessionId, 'direct');
           }
         }
       }
@@ -760,6 +915,9 @@ export const buildTelegramBot = (
 
     pendingInput.delete(telegramUserId);
     pendingCreateTopicDraft.delete(telegramUserId);
+    pendingMediationIntakeSession.delete(telegramUserId);
+    pendingMediationIntakeStep.delete(telegramUserId);
+    pendingMediationIntakeDraft.delete(telegramUserId);
     await sendReplyWithRetry(
       ctx,
       [
@@ -1074,38 +1232,6 @@ export const buildTelegramBot = (
         action_type: 'select_preferred'
       });
     } catch (error) {
-      if (error instanceof DomainError && error.code === 'INTAKE_NOT_FOUND') {
-        pendingProblemSession.set(telegramUserId, sessionId);
-        await sendReplyWithRetry(
-          ctx,
-          [
-            'Не вижу вашу формулировку в этой договорённости.',
-            'Отправьте коротко, в чём сейчас основная проблема.'
-          ].join('\n'),
-          {
-            correlation_id: makeCorrelationId(ctx),
-            action_type: 'problem_confirm'
-          }
-        );
-        return;
-      }
-
-      if (
-        error instanceof DomainError &&
-        error.code === 'INTAKE_VALIDATION_ERROR' &&
-        error.message.includes('Synthesis requires confirmed problem statements')
-      ) {
-        await sendReplyWithRetry(
-          ctx,
-          'Пока не хватает данных второй стороны. Ждём второго человека.',
-          {
-            correlation_id: makeCorrelationId(ctx),
-            action_type: 'problem_confirm'
-          }
-        );
-        return;
-      }
-
       await sendReplyWithRetry(
         ctx,
         mapTelegramErrorText(error),
@@ -1398,140 +1524,124 @@ export const buildTelegramBot = (
     await giveConsentFlow(ctx, ctx.match[1], userIdFromCtx(ctx), 'give_consent_button');
   });
 
-  bot.callbackQuery(/^problem:edit:([A-Za-z0-9_-]{3,})$/, async (ctx) => {
+  bot.callbackQuery(/^intake:edit:([A-Za-z0-9_-]{3,}):([a-z_]+)$/, async (ctx) => {
     await safeAnswerCallback(ctx);
     const sessionId = ctx.match[1];
+    const stepId = ctx.match[2] as MediationIntakeStepId;
     const telegramUserId = userIdFromCtx(ctx);
-    pendingProblemSession.set(telegramUserId, sessionId);
-    problemConfirmed.delete(`${sessionId}:${telegramUserId}`);
-    problemSynthesisSent.delete(sessionId);
+    if (!mediationStepById.has(stepId)) {
+      await sendReplyWithRetry(ctx, 'Не могу найти этот шаг. Отправьте ответ ещё раз.', {
+        correlation_id: makeCorrelationId(ctx),
+        action_type: 'mediation_intake_edit'
+      });
+      return;
+    }
+    pendingMediationIntakeSession.set(telegramUserId, sessionId);
+    pendingMediationIntakeStep.set(telegramUserId, stepId);
+    pendingMediationIntakeDraft.delete(telegramUserId);
     await sendReplyWithRetry(
       ctx,
       'Отправьте исправленный вариант.',
       {
         correlation_id: makeCorrelationId(ctx),
-        action_type: 'problem_edit_prompt'
+        action_type: 'mediation_intake_edit'
       }
     );
   });
 
-  bot.callbackQuery(/^problem:confirm:([A-Za-z0-9_-]{3,})$/, async (ctx) => {
+  bot.callbackQuery(/^intake:confirm:([A-Za-z0-9_-]{3,}):([a-z_]+)$/, async (ctx) => {
     await safeAnswerCallback(ctx);
     const sessionId = ctx.match[1];
+    const stepId = ctx.match[2] as MediationIntakeStepId;
     const telegramUserId = userIdFromCtx(ctx);
-    try {
-      await gateway.confirmProblemDefinition(
-        {
-          correlation_id: makeCorrelationId(ctx),
-          channel: 'TELEGRAM',
-          idempotency_key: makeKey(ctx, 'problem_confirm'),
-          action_type: 'problem_confirm',
-          case_id: sessionId,
-          participant_id: telegramUserId,
-          payload: { session_id: sessionId }
-        },
-        sessionId,
-        telegramUserId
-      );
+    const step = mediationStepById.get(stepId);
+    if (!step) {
+      await sendReplyWithRetry(ctx, 'Не могу найти этот шаг. Отправьте ответ ещё раз.', {
+        correlation_id: makeCorrelationId(ctx),
+        action_type: 'mediation_intake_confirm'
+      });
+      return;
+    }
 
-      if (problemSynthesisSent.has(sessionId)) {
-        await sendReplyWithRetry(
-          ctx,
-          'Вы уже подтвердили свою формулировку.',
-          {
-            correlation_id: makeCorrelationId(ctx),
-            action_type: 'problem_confirm'
-          }
-        );
-        return;
-      }
-
-      let readiness = await gateway.getProblemDefinitionReadiness(sessionId, telegramUserId);
-      if (!readiness.both_ready) {
-        for (let attempt = 0; attempt < 3; attempt += 1) {
-          await sleep(150);
-          readiness = await gateway.getProblemDefinitionReadiness(sessionId, telegramUserId);
-          if (readiness.both_ready) {
-            break;
-          }
-        }
-      }
-      if (!readiness.both_ready) {
-        await sendReplyWithRetry(
-          ctx,
-          ['Вы подтвердили свою формулировку.', 'Ждём второго человека.'].join('\n'),
-          {
-            correlation_id: makeCorrelationId(ctx),
-            action_type: 'problem_confirm'
-          }
-        );
-        return;
-      }
-
-      const synthesisEnvelope = await gateway.buildProblemSynthesis(
-        {
-          correlation_id: makeCorrelationId(ctx),
-          channel: 'TELEGRAM',
-          idempotency_key: makeKey(ctx, 'problem_synthesis'),
-          action_type: 'problem_synthesis',
-          case_id: sessionId,
-          participant_id: telegramUserId,
-          payload: { session_id: sessionId }
-        },
-        sessionId,
-        telegramUserId
-      );
-      const synthesisText = renderProblemSynthesis(synthesisEnvelope.synthesis);
-      problemSynthesisSent.add(sessionId);
-      const session = await gateway.getSessionStatus(sessionId, telegramUserId);
-      for (const participant of session.participants) {
-        if (participant.telegramUserId === telegramUserId) {
+    const draft = pendingMediationIntakeDraft.get(telegramUserId);
+    if (!draft || draft.sessionId !== sessionId || draft.stepId !== stepId) {
+      try {
+        const progress = await gateway.getIntakeProgress(sessionId, telegramUserId);
+        const alreadyCompleted = step.writes.every((field) => {
+          const entry = progress.fields[field];
+          return Boolean(entry.rawValue && entry.normalizedValue);
+        });
+        if (alreadyCompleted) {
           await sendReplyWithRetry(
             ctx,
-            synthesisText,
+            'Этот ответ уже подтверждён.',
             {
               correlation_id: makeCorrelationId(ctx),
-              action_type: 'problem_both_confirmed'
-            },
-            { reply_markup: synthesisFeedbackKeyboard(sessionId) }
+              action_type: 'mediation_intake_confirm'
+            }
           );
-        } else {
-          await sendDirectWithRetry(
-            participant.telegramUserId,
-            synthesisText,
-            {
-              correlation_id: `tg:problem:${sessionId}:${participant.telegramUserId}`,
-              action_type: 'problem_both_confirmed'
-            },
-            { reply_markup: synthesisFeedbackKeyboard(sessionId) }
-          );
+          await askNextMediationIntakeQuestion(telegramUserId, sessionId, 'current', ctx);
+          return;
+        }
+      } catch {
+        // fallthrough to repeat prompt
+      }
+      pendingMediationIntakeSession.set(telegramUserId, sessionId);
+      pendingMediationIntakeStep.set(telegramUserId, stepId);
+      await sendReplyWithRetry(
+        ctx,
+        'Повторите, пожалуйста, ответ на этот вопрос.',
+        {
+          correlation_id: makeCorrelationId(ctx),
+          action_type: 'mediation_intake_confirm'
+        }
+      );
+      return;
+    }
+
+    try {
+      const answers: StructuredIntakeAnswerInput[] = step.writes.map((field) => ({
+        field,
+        value: draft.text
+      }));
+      if (step.id === 'acceptable_flexibility') {
+        const progress = await gateway.getIntakeProgress(sessionId, telegramUserId);
+        const hardConstraint = progress.fields.constraints.rawValue?.trim();
+        if (hardConstraint) {
+          answers.push({
+            field: 'non_negotiables',
+            value: hardConstraint
+          });
         }
       }
-      return;
-    } catch (error) {
-      if (
-        error instanceof DomainError &&
-        (error.code === 'INTAKE_NOT_FOUND' ||
-          (error.code === 'INTAKE_VALIDATION_ERROR' &&
-            error.message.includes('Synthesis requires confirmed problem statements')))
-      ) {
-        await sendReplyWithRetry(
-          ctx,
-          'Пока не хватает данных второй стороны. Ждём второго человека.',
-          {
-            correlation_id: makeCorrelationId(ctx),
-            action_type: 'problem_confirm'
-          }
-        );
-        return;
-      }
 
+      await gateway.submitIntakeAnswers(
+        {
+          correlation_id: makeCorrelationId(ctx),
+          channel: 'TELEGRAM',
+          idempotency_key: makeKey(ctx, `mediation_intake_confirm_${step.id}`),
+          action_type: 'mediation_intake_confirm',
+          case_id: sessionId,
+          participant_id: telegramUserId,
+          payload: { session_id: sessionId, step_id: step.id, text: draft.text }
+        },
+        sessionId,
+        telegramUserId,
+        answers
+      );
+      pendingMediationIntakeDraft.delete(telegramUserId);
+      await sendReplyWithRetry(ctx, 'Принято. Идём дальше.', {
+        correlation_id: makeCorrelationId(ctx),
+        action_type: 'mediation_intake_confirm'
+      });
+      await askNextMediationIntakeQuestion(telegramUserId, sessionId, 'current', ctx);
+    } catch (error) {
       await sendReplyWithRetry(
         ctx,
         mapTelegramErrorText(error),
         {
           correlation_id: makeCorrelationId(ctx),
-          action_type: 'problem_confirm'
+          action_type: 'mediation_intake_confirm'
         }
       );
     }
@@ -1783,48 +1893,61 @@ export const buildTelegramBot = (
       }
     }
 
-    const pendingProblemForSession = pendingProblemSession.get(telegramUserId);
-    if (pendingProblemForSession) {
+    const pendingMediationSession = pendingMediationIntakeSession.get(telegramUserId);
+    if (pendingMediationSession) {
       const input = text.trim();
       if (!input) {
+        const stepId = pendingMediationIntakeStep.get(telegramUserId);
+        const question = stepId ? mediationStepById.get(stepId)?.question : null;
         await sendReplyWithRetry(
           ctx,
-          'С чем хотите договориться? Опиши коротко',
+          question ?? 'Ответьте, пожалуйста, коротко на текущий вопрос.',
           {
             correlation_id: makeCorrelationId(ctx),
-            action_type: 'problem_definition'
+            action_type: 'mediation_intake_answer'
           }
         );
         return;
       }
 
       try {
-        const result = await gateway.submitProblemDefinition(
-          {
-            correlation_id: makeCorrelationId(ctx),
-            channel: 'TELEGRAM',
-            idempotency_key: makeKey(ctx, 'problem_definition'),
-            action_type: 'problem_definition',
-            case_id: pendingProblemForSession,
-            participant_id: telegramUserId,
-            payload: { session_id: pendingProblemForSession, text: input }
-          },
-          pendingProblemForSession,
-          telegramUserId,
-          input
-        );
-        problemConfirmed.delete(`${pendingProblemForSession}:${telegramUserId}`);
-        problemSynthesisSent.delete(pendingProblemForSession);
+        let stepId = pendingMediationIntakeStep.get(telegramUserId);
+        if (!stepId) {
+          const view = await gateway.getIntakeProgress(pendingMediationSession, telegramUserId);
+          stepId = findNextMediationIntakeStep(view.fields)?.id;
+        }
+
+        if (!stepId) {
+          await sendReplyWithRetry(
+            ctx,
+            'Спасибо, ваша часть уже собрана. Ждём второго человека.',
+            {
+              correlation_id: makeCorrelationId(ctx),
+              action_type: 'mediation_intake_answer'
+            }
+          );
+          pendingMediationIntakeSession.delete(telegramUserId);
+          pendingMediationIntakeStep.delete(telegramUserId);
+          pendingMediationIntakeDraft.delete(telegramUserId);
+          return;
+        }
+
+        const step = mediationStepById.get(stepId)!;
+        pendingMediationIntakeDraft.set(telegramUserId, {
+          sessionId: pendingMediationSession,
+          stepId,
+          text: input
+        });
+
         await sendReplyWithRetry(
           ctx,
-          ['Я записал это так:', result.recorded_text, 'Всё верно?'].join('\n'),
+          [step.confirmPrefix, input, 'Я понял правильно?'].join('\n'),
           {
             correlation_id: makeCorrelationId(ctx),
-            action_type: 'problem_definition'
+            action_type: 'mediation_intake_answer'
           },
-          { reply_markup: problemConfirmationKeyboard(pendingProblemForSession) }
+          { reply_markup: mediationIntakeConfirmationKeyboard(pendingMediationSession, stepId) }
         );
-        pendingProblemSession.delete(telegramUserId);
         return;
       } catch (error) {
         await sendReplyWithRetry(
@@ -1832,7 +1955,7 @@ export const buildTelegramBot = (
           mapTelegramErrorText(error),
           {
             correlation_id: makeCorrelationId(ctx),
-            action_type: 'problem_definition'
+            action_type: 'mediation_intake_answer'
           }
         );
         return;

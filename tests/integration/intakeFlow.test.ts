@@ -255,4 +255,46 @@ describe('private intake flow', () => {
     const done = await sessionRepo.findById(sessionId);
     expect(done?.state).toBe(SessionStates.READY_FOR_SYNTHESIS);
   });
+
+  it('resumes from exact step after service restart', async () => {
+    const clock = new FixedClock(new Date('2026-01-03T00:00:00.000Z'));
+    const ids = new SequentialIdGenerator();
+    const sessionRepo = new InMemorySessionRepository();
+    const intakeRepo = new InMemoryIntakeRepository();
+    const mediation = new MediationService(sessionRepo, clock, ids);
+
+    const intakeBeforeRestart = new IntakeService(
+      sessionRepo,
+      intakeRepo,
+      new DeterministicIntakeNormalizer(),
+      ids,
+      clock
+    );
+
+    const created = await mediation.createSession('party-a');
+    const joined = await mediation.joinSessionByInviteToken(created.inviteToken, 'party-b');
+    await mediation.grantConsent(joined.id, 'party-a');
+    await mediation.grantConsent(joined.id, 'party-b');
+
+    let view = await intakeBeforeRestart.startOrResume(joined.id, 'party-a');
+    view = await intakeBeforeRestart.submitFieldAnswer({
+      sessionId: joined.id,
+      telegramUserId: 'party-a',
+      field: 'facts',
+      rawValue: 'restart facts',
+      expectedVersion: view.version
+    });
+    expect(view.currentField).toBe('interpretations');
+
+    const intakeAfterRestart = new IntakeService(
+      sessionRepo,
+      intakeRepo,
+      new DeterministicIntakeNormalizer(),
+      ids,
+      clock
+    );
+    const resumed = await intakeAfterRestart.startOrResume(joined.id, 'party-a');
+    expect(resumed.currentField).toBe('interpretations');
+    expect(resumed.fields.facts.rawValue).toBe('restart facts');
+  });
 });

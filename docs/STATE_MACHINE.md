@@ -51,6 +51,13 @@ Legacy reserved enum values still present for compatibility:
 5. `submit_intake_field`
 - intake from: `IN_PROGRESS` or `SUMMARY_PENDING_CONFIRMATION` (edit before confirmation)
 - intake to: `IN_PROGRESS` or `SUMMARY_PENDING_CONFIRMATION`
+- Telegram guided UX maps one user-confirmed step to one or more intake fields:
+  - `situation_facts` -> `facts`
+  - `tension_point` -> `interpretations`
+  - `important_need_or_interest` -> `interests`
+  - `hard_constraint` -> `constraints`, `boundaries`
+  - `desired_outcome` -> `desired_outcome`
+  - `acceptable_flexibility` -> `acceptable_concessions` (+ `non_negotiables` mirrored from hard constraint)
 
 6. `confirm_summary`
 - intake from: `SUMMARY_PENDING_CONFIRMATION`

@@ -19,6 +19,7 @@ import { ProposalSet, ProposalVariantType } from '../../domain/proposal/types.js
 import { SessionNotFoundError } from '../../domain/session/errors.js';
 import { SessionState, SessionStates } from '../../domain/session/types.js';
 import { IntakeValidationError } from '../../domain/intake/errors.js';
+import { IntakeField } from '../../domain/intake/types.js';
 import { SynthesisPreconditionError } from '../../domain/synthesis/errors.js';
 import {
   NegotiationActionTypes,
@@ -103,6 +104,11 @@ export interface ProblemSynthesisDogfoodExport {
   review_summary: ProblemSynthesisReviewSummary['review_summary'];
   confirm_count: number;
   clarify_count: number;
+}
+
+export interface StructuredIntakeAnswerInput {
+  field: IntakeField;
+  value: string;
 }
 
 class NoopSynthesisReviewRepository implements SynthesisReviewRepository {
@@ -196,6 +202,42 @@ export class ProtocolGatewayService {
     return this.executeIdempotent(ctx, async () => {
       await this.requireParticipant(sessionId, telegramUserId);
       return this.intakeService.startOrResume(sessionId, telegramUserId);
+    });
+  }
+
+  async getIntakeProgress(sessionId: string, telegramUserId: string): Promise<IntakeView> {
+    await this.requireParticipant(sessionId, telegramUserId);
+    return this.intakeService.startOrResume(sessionId, telegramUserId);
+  }
+
+  async submitIntakeAnswers(
+    ctx: ActionExecutionContext,
+    sessionId: string,
+    telegramUserId: string,
+    answers: StructuredIntakeAnswerInput[]
+  ): Promise<IntakeView> {
+    return this.executeIdempotent(ctx, async () => {
+      await this.requireParticipant(sessionId, telegramUserId);
+      if (answers.length === 0) {
+        throw new IntakeValidationError('At least one intake answer is required.');
+      }
+
+      let view = await this.intakeService.startOrResume(sessionId, telegramUserId);
+      for (const answer of answers) {
+        const rawValue = answer.value.trim();
+        if (!rawValue) {
+          throw new IntakeValidationError('Intake answer cannot be empty.');
+        }
+        view = await this.intakeService.submitFieldAnswer({
+          sessionId,
+          telegramUserId,
+          field: answer.field,
+          rawValue,
+          expectedVersion: view.version
+        });
+      }
+
+      return view;
     });
   }
 

@@ -38,7 +38,14 @@
 - `normalizedValue`
 - `updatedAt`
 - unique (`intakeId`, `field`)
-- naming note: in current Telegram UX layer, the participant "problem statement" step is mapped to intake field `facts` as a temporary storage alias (`problem_statement -> facts`) until dedicated field migration.
+- guided-intake mapping note:
+  - `situation_facts` -> `facts`
+  - `tension_point` -> `interpretations`
+  - `important_need_or_interest` -> `interests`
+  - `hard_constraint` -> `constraints`, `boundaries`
+  - `desired_outcome` -> `desired_outcome`
+  - `acceptable_flexibility` -> `acceptable_concessions`
+  - `non_negotiables` is currently mirrored from `hard_constraint` in Telegram guided UX.
 
 ### `IntakeRawMessage`
 - append-only raw participant messages

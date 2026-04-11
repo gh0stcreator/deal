@@ -72,7 +72,12 @@ export class IntakeService {
   async startOrResume(sessionId: string, telegramUserId: string): Promise<IntakeView> {
     const { session, participant } = await this.requireParticipant(sessionId, telegramUserId);
 
-    if (session.state !== SessionStates.CONSENTED && session.state !== SessionStates.SIDE_A_INTAKE && session.state !== SessionStates.SIDE_B_INTAKE) {
+    if (
+      session.state !== SessionStates.CONSENTED &&
+      session.state !== SessionStates.SIDE_A_INTAKE &&
+      session.state !== SessionStates.SIDE_B_INTAKE &&
+      session.state !== SessionStates.READY_FOR_SYNTHESIS
+    ) {
       throw new InvalidStateTransitionError(
         `Cannot start intake while session is in state ${session.state}.`
       );
