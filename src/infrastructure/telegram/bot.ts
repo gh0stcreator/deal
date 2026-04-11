@@ -397,7 +397,7 @@ export const buildTelegramBot = (
 
   const createTopicDraftKeyboard = () =>
     new InlineKeyboard()
-      .text('Да, отправить', 'create_topic:confirm_draft')
+      .text('Да, верно', 'create_topic:confirm_draft')
       .row()
       .text('Хочу переформулировать', 'create_topic:rephrase');
 
