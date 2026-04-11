@@ -1388,7 +1388,21 @@ export const buildTelegramBot = (
     const sessionId = ctx.match[1];
     const telegramUserId = userIdFromCtx(ctx);
     try {
-      problemConfirmed.add(`${sessionId}:${telegramUserId}`);
+      const participantKey = `${sessionId}:${telegramUserId}`;
+      const alreadyConfirmedByThisParticipant = problemConfirmed.has(participantKey);
+      if (alreadyConfirmedByThisParticipant) {
+        await sendReplyWithRetry(
+          ctx,
+          ['Вы уже подтвердили свою формулировку.', 'Ждём второго человека.'].join('\n'),
+          {
+            correlation_id: makeCorrelationId(ctx),
+            action_type: 'problem_confirm'
+          }
+        );
+        return;
+      }
+
+      problemConfirmed.add(participantKey);
 
       if (problemSynthesisSent.has(sessionId)) {
         await sendReplyWithRetry(
