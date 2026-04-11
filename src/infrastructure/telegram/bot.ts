@@ -247,9 +247,14 @@ export const buildTelegramBot = (
   const pendingSynthesisClarificationSession = new Map<string, string>();
   const problemSynthesisSent = new Set<string>();
   const issueLoopSent = new Set<string>();
+  const draftAgreementSent = new Set<string>();
   const pendingIssueChange = new Map<
     string,
     { sessionId: string; loopVersion: number; optionId: string }
+  >();
+  const pendingDraftAgreementChange = new Map<
+    string,
+    { sessionId: string; draftVersion: number }
   >();
   const lastSessionByUser = new Map<string, string>();
   const lastInviteByUser = new Map<
@@ -672,6 +677,34 @@ export const buildTelegramBot = (
       `Компромисс: ${option.tradeoff_note}`
     ].join('\n');
 
+  const draftAgreementKeyboard = (sessionId: string, draftVersion: number) =>
+    new InlineKeyboard()
+      .text('Подтверждаю', `agreement:respond:${sessionId}:${draftVersion}:confirm`)
+      .row()
+      .text('Хочу изменить', `agreement:respond:${sessionId}:${draftVersion}:edit`)
+      .row()
+      .text('Не подходит', `agreement:respond:${sessionId}:${draftVersion}:reject`);
+
+  const renderDraftAgreement = (
+    draft: Awaited<ReturnType<ProtocolGatewayService['generateDraftAgreement']>>
+  ): string =>
+    [
+      'Похоже, вы пришли к такому варианту:',
+      '',
+      ...draft.agreed_actions.map((action) => `— ${action}`),
+      '',
+      'Границы:',
+      ...draft.boundaries.map((entry) => `— ${entry}`),
+      '',
+      'Если что-то пойдёт не так:',
+      `— ${draft.fallback_rule}`,
+      '',
+      'Можно пересмотреть:',
+      `— ${draft.review_point}`,
+      '',
+      'Подтверждаем договорённость?'
+    ].join('\n');
+
   const maybeStartIssueLoop = async (
     sessionId: string,
     triggerTelegramUserId: string,
@@ -750,6 +783,51 @@ export const buildTelegramBot = (
           }
         );
       }
+    }
+  };
+
+  const maybeStartDraftAgreement = async (
+    sessionId: string,
+    triggerTelegramUserId: string
+  ) => {
+    if (draftAgreementSent.has(sessionId)) {
+      return;
+    }
+
+    const summary = await gateway.getIssueResolutionSummary(sessionId, triggerTelegramUserId);
+    if (summary.status !== 'WORKABLE_PATH_FOUND') {
+      return;
+    }
+
+    draftAgreementSent.add(sessionId);
+    try {
+      const draft = await gateway.generateDraftAgreement(
+        {
+          correlation_id: `tg:draft:${sessionId}:${triggerTelegramUserId}`,
+          channel: 'TELEGRAM',
+          idempotency_key: `tg:draft:${sessionId}`,
+          action_type: 'draft_agreement_generate',
+          case_id: sessionId,
+          participant_id: triggerTelegramUserId,
+          payload: { session_id: sessionId }
+        },
+        sessionId,
+        triggerTelegramUserId
+      );
+      const session = await gateway.getSessionStatus(sessionId, triggerTelegramUserId);
+      for (const participant of session.participants) {
+        await sendDirectWithRetry(
+          participant.telegramUserId,
+          renderDraftAgreement(draft),
+          {
+            correlation_id: `tg:draft:${sessionId}:${participant.telegramUserId}`,
+            action_type: 'draft_agreement'
+          },
+          { reply_markup: draftAgreementKeyboard(sessionId, draft.draft_version) }
+        );
+      }
+    } catch {
+      draftAgreementSent.delete(sessionId);
     }
   };
 
@@ -1104,6 +1182,7 @@ export const buildTelegramBot = (
     pendingMediationIntakeStep.delete(telegramUserId);
     pendingMediationIntakeDraft.delete(telegramUserId);
     pendingIssueChange.delete(telegramUserId);
+    pendingDraftAgreementChange.delete(telegramUserId);
     await sendReplyWithRetry(
       ctx,
       [
@@ -2078,6 +2157,7 @@ export const buildTelegramBot = (
             action_type: 'issue_option_reaction'
           }
         );
+        await maybeStartDraftAgreement(sessionId, telegramUserId);
       } catch (error) {
         await sendReplyWithRetry(
           ctx,
@@ -2085,6 +2165,79 @@ export const buildTelegramBot = (
           {
             correlation_id: makeCorrelationId(ctx),
             action_type: 'issue_option_reaction'
+          }
+        );
+      }
+    }
+  );
+
+  bot.callbackQuery(
+    /^agreement:respond:([A-Za-z0-9_-]{3,}):(\d+):(confirm|edit|reject)$/,
+    async (ctx) => {
+      await safeAnswerCallback(ctx);
+      const sessionId = ctx.match[1];
+      const draftVersion = Number(ctx.match[2]);
+      const action = ctx.match[3];
+      const telegramUserId = userIdFromCtx(ctx);
+
+      if (action === 'edit') {
+        pendingDraftAgreementChange.set(telegramUserId, { sessionId, draftVersion });
+        await sendReplyWithRetry(
+          ctx,
+          'Что именно нужно изменить?',
+          {
+            correlation_id: makeCorrelationId(ctx),
+            action_type: 'draft_agreement_edit_prompt'
+          }
+        );
+        return;
+      }
+
+      const responseType =
+        action === 'confirm' ? 'CONFIRM' : 'REJECT';
+
+      try {
+        const decision = await gateway.submitDraftAgreementResponse(
+          {
+            correlation_id: makeCorrelationId(ctx),
+            channel: 'TELEGRAM',
+            idempotency_key: makeKey(ctx, `draft_response_${draftVersion}_${action}`),
+            action_type: 'draft_agreement_response',
+            case_id: sessionId,
+            participant_id: telegramUserId,
+            payload: { session_id: sessionId, draft_version: draftVersion, action }
+          },
+          {
+            session_id: sessionId,
+            telegram_user_id: telegramUserId,
+            draft_version: draftVersion,
+            response_type: responseType
+          }
+        );
+
+        const feedback =
+          decision.outcome === 'AGREEMENT'
+            ? 'Готово. Договорённость подтверждена обеими сторонами.'
+            : decision.outcome === 'DEADLOCK'
+              ? 'Пока договорённость не получилась. Зафиксировал, что стороны не пришли к варианту.'
+              : decision.outcome === 'PARTIAL_AGREEMENT'
+                ? 'Зафиксировал частичное согласие. Нужны уточнения по оставшимся пунктам.'
+                : 'Зафиксировал ответ. Ждём вторую сторону.';
+        await sendReplyWithRetry(
+          ctx,
+          feedback,
+          {
+            correlation_id: makeCorrelationId(ctx),
+            action_type: 'draft_agreement_response'
+          }
+        );
+      } catch (error) {
+        await sendReplyWithRetry(
+          ctx,
+          mapTelegramErrorText(error),
+          {
+            correlation_id: makeCorrelationId(ctx),
+            action_type: 'draft_agreement_response'
           }
         );
       }
@@ -2214,6 +2367,7 @@ export const buildTelegramBot = (
             action_type: 'issue_reaction_edit'
           }
         );
+        await maybeStartDraftAgreement(pendingIssueEdit.sessionId, telegramUserId);
       } catch (error) {
         await sendReplyWithRetry(
           ctx,
@@ -2221,6 +2375,95 @@ export const buildTelegramBot = (
           {
             correlation_id: makeCorrelationId(ctx),
             action_type: 'issue_reaction_edit'
+          }
+        );
+      }
+      return;
+    }
+
+    const pendingDraftChange = pendingDraftAgreementChange.get(telegramUserId);
+    if (pendingDraftChange) {
+      const input = text.trim();
+      if (!input) {
+        await sendReplyWithRetry(
+          ctx,
+          'Что именно нужно изменить?',
+          {
+            correlation_id: makeCorrelationId(ctx),
+            action_type: 'draft_agreement_edit'
+          }
+        );
+        return;
+      }
+
+      try {
+        await gateway.submitDraftAgreementResponse(
+          {
+            correlation_id: makeCorrelationId(ctx),
+            channel: 'TELEGRAM',
+            idempotency_key: makeKey(
+              ctx,
+              `draft_edit_${pendingDraftChange.draftVersion}`
+            ),
+            action_type: 'draft_agreement_response',
+            case_id: pendingDraftChange.sessionId,
+            participant_id: telegramUserId,
+            payload: {
+              session_id: pendingDraftChange.sessionId,
+              draft_version: pendingDraftChange.draftVersion,
+              response_type: 'REQUEST_CHANGE'
+            }
+          },
+          {
+            session_id: pendingDraftChange.sessionId,
+            telegram_user_id: telegramUserId,
+            draft_version: pendingDraftChange.draftVersion,
+            response_type: 'REQUEST_CHANGE',
+            change_request: input
+          }
+        );
+        pendingDraftAgreementChange.delete(telegramUserId);
+
+        const regenerated = await gateway.regenerateDraftAgreement(
+          {
+            correlation_id: makeCorrelationId(ctx),
+            channel: 'TELEGRAM',
+            idempotency_key: makeKey(
+              ctx,
+              `draft_regenerate_${pendingDraftChange.sessionId}`
+            ),
+            action_type: 'draft_agreement_regenerate',
+            case_id: pendingDraftChange.sessionId,
+            participant_id: telegramUserId,
+            payload: { session_id: pendingDraftChange.sessionId }
+          },
+          pendingDraftChange.sessionId,
+          telegramUserId
+        );
+        const session = await gateway.getSessionStatus(pendingDraftChange.sessionId, telegramUserId);
+        for (const participant of session.participants) {
+          await sendDirectWithRetry(
+            participant.telegramUserId,
+            renderDraftAgreement(regenerated),
+            {
+              correlation_id: `tg:draft_regenerated:${pendingDraftChange.sessionId}:${participant.telegramUserId}`,
+              action_type: 'draft_agreement'
+            },
+            {
+              reply_markup: draftAgreementKeyboard(
+                pendingDraftChange.sessionId,
+                regenerated.draft_version
+              )
+            }
+          );
+        }
+      } catch (error) {
+        await sendReplyWithRetry(
+          ctx,
+          mapTelegramErrorText(error),
+          {
+            correlation_id: makeCorrelationId(ctx),
+            action_type: 'draft_agreement_edit'
           }
         );
       }

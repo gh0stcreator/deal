@@ -11,6 +11,7 @@ import { SessionRepository } from '../ports/SessionRepository.js';
 import { ProtocolTrackingRepository } from '../ports/ProtocolTrackingRepository.js';
 import { SynthesisReviewRepository } from '../ports/SynthesisReviewRepository.js';
 import { IssueResolutionRepository } from '../ports/IssueResolutionRepository.js';
+import { DraftAgreementRepository } from '../ports/DraftAgreementRepository.js';
 import {
   IdempotencyRecord,
   ProtocolEventOutcomes,
@@ -41,6 +42,13 @@ import {
   IssueResolutionLoop,
   IssueResolutionOption
 } from '../../domain/issue/types.js';
+import {
+  DraftAgreement,
+  DraftAgreementOutcomeType,
+  DraftAgreementOutcomeTypes,
+  DraftAgreementResponseType,
+  DraftAgreementResponseTypes
+} from '../../domain/agreement/types.js';
 
 const RETRY_WINDOW_MS = 20_000;
 
@@ -148,6 +156,26 @@ export interface IssueResolutionSummaryView {
   }>;
 }
 
+export interface DraftAgreementView {
+  draft_version: number;
+  loop_version: number;
+  source_option_id: string;
+  agreement_title: string;
+  agreed_actions: string[];
+  boundaries: string[];
+  conditions: string[];
+  fallback_rule: string;
+  review_point: string;
+}
+
+export interface DraftAgreementDecisionView {
+  draft_version: number;
+  outcome: DraftAgreementOutcomeType | null;
+  confirm_count: number;
+  reject_count: number;
+  change_request_count: number;
+}
+
 export interface StructuredIntakeAnswerInput {
   field: IntakeField;
   value: string;
@@ -185,6 +213,30 @@ class NoopIssueResolutionRepository implements IssueResolutionRepository {
   }
 }
 
+class NoopDraftAgreementRepository implements DraftAgreementRepository {
+  async findLatestByCaseId(): Promise<DraftAgreement | null> {
+    return null;
+  }
+
+  async saveDraft(): Promise<void> {}
+
+  async listByCaseId(): Promise<DraftAgreement[]> {
+    return [];
+  }
+
+  async saveOrUpdateResponse(): Promise<void> {}
+
+  async listResponses(): Promise<never[]> {
+    return [];
+  }
+
+  async upsertOutcome(): Promise<void> {}
+
+  async findOutcome(): Promise<null> {
+    return null;
+  }
+}
+
 export class ProtocolGatewayService {
   /**
    * Phase-specific alias:
@@ -206,7 +258,8 @@ export class ProtocolGatewayService {
     private readonly clock: Clock,
     private readonly logger: AppLogger = createNoopLogger(),
     private readonly synthesisReviewRepository: SynthesisReviewRepository = new NoopSynthesisReviewRepository(),
-    private readonly issueResolutionRepository: IssueResolutionRepository = new NoopIssueResolutionRepository()
+    private readonly issueResolutionRepository: IssueResolutionRepository = new NoopIssueResolutionRepository(),
+    private readonly draftAgreementRepository: DraftAgreementRepository = new NoopDraftAgreementRepository()
   ) {}
 
   async createSession(
@@ -771,6 +824,277 @@ export class ProtocolGatewayService {
       throw new IntakeValidationError('Issue loop is not ready yet.');
     }
     return this.buildIssueSummary(session, loop);
+  }
+
+  async generateDraftAgreement(
+    ctx: ActionExecutionContext,
+    sessionId: string,
+    telegramUserId: string
+  ): Promise<DraftAgreementView> {
+    return this.executeIdempotent(ctx, async () => {
+      const { session } = await this.requireParticipantRecord(sessionId, telegramUserId);
+      if (session.participants.length !== 2) {
+        throw new IntakeValidationError('Draft agreement requires two participants.');
+      }
+
+      const loop = await this.issueResolutionRepository.findLatestLoopByCaseId(sessionId);
+      if (!loop) {
+        throw new IntakeValidationError('Issue loop is not ready yet.');
+      }
+      const reactions = await this.issueResolutionRepository.listReactions(sessionId, loop.version);
+      const source = resolveDraftSource(loop, reactions);
+      if (!source) {
+        throw new IntakeValidationError(
+          'Draft agreement can be generated only after converged option signals.'
+        );
+      }
+
+      const partyA = session.participants.find((entry) => entry.role === 'PARTY_A');
+      const partyB = session.participants.find((entry) => entry.role === 'PARTY_B');
+      if (!partyA || !partyB) {
+        throw new IntakeValidationError('Draft agreement requires explicit PARTY_A/PARTY_B roles.');
+      }
+      const partyAData = await this.intakeService.getPrivateIntakeData(sessionId, partyA.telegramUserId);
+      const partyBData = await this.intakeService.getPrivateIntakeData(sessionId, partyB.telegramUserId);
+      if (partyAData.view.state !== 'COMPLETED' || partyBData.view.state !== 'COMPLETED') {
+        throw new IntakeValidationError('Draft agreement requires confirmed intake from both sides.');
+      }
+
+      const sourceOption = loop.options.find((option) => option.option_id === source.optionId);
+      if (!sourceOption) {
+        throw new IntakeValidationError('Source option not found for agreement.');
+      }
+
+      const nextVersion = (await this.draftAgreementRepository.findLatestByCaseId(sessionId))?.version ?? 0;
+      const draft = buildDraftAgreement({
+        id: this.idGenerator.nextId(),
+        caseId: sessionId,
+        version: nextVersion + 1,
+        loopVersion: loop.version,
+        sourceOption,
+        sideA: {
+          desiredOutcome: requireNormalized(
+            partyAData.view.fields.desired_outcome.normalizedValue,
+            'party_a.desired_outcome'
+          ),
+          constraint: requireNormalized(
+            partyAData.view.fields.constraints.normalizedValue,
+            'party_a.constraints'
+          ),
+          flexibility: requireNormalized(
+            partyAData.view.fields.acceptable_concessions.normalizedValue,
+            'party_a.acceptable_concessions'
+          )
+        },
+        sideB: {
+          desiredOutcome: requireNormalized(
+            partyBData.view.fields.desired_outcome.normalizedValue,
+            'party_b.desired_outcome'
+          ),
+          constraint: requireNormalized(
+            partyBData.view.fields.constraints.normalizedValue,
+            'party_b.constraints'
+          ),
+          flexibility: requireNormalized(
+            partyBData.view.fields.acceptable_concessions.normalizedValue,
+            'party_b.acceptable_concessions'
+          )
+        },
+        mergedChangeRequest: source.mergedChangeRequest,
+        createdAt: this.clock.now()
+      });
+      await this.draftAgreementRepository.saveDraft(draft);
+
+      return mapDraftAgreement(draft);
+    });
+  }
+
+  async submitDraftAgreementResponse(
+    ctx: ActionExecutionContext,
+    input: {
+      session_id: string;
+      telegram_user_id: string;
+      draft_version: number;
+      response_type: DraftAgreementResponseType;
+      change_request?: string | null;
+    }
+  ): Promise<DraftAgreementDecisionView> {
+    return this.executeIdempotent(ctx, async () => {
+      const { session, participant } = await this.requireParticipantRecord(
+        input.session_id,
+        input.telegram_user_id
+      );
+      const draft = (await this.draftAgreementRepository.listByCaseId(input.session_id)).find(
+        (entry) => entry.version === input.draft_version
+      );
+      if (!draft) {
+        throw new IntakeValidationError('Draft agreement was not found.');
+      }
+
+      const changeRequest = input.change_request?.trim() ?? null;
+      if (input.response_type === DraftAgreementResponseTypes.REQUEST_CHANGE && !changeRequest) {
+        throw new IntakeValidationError('Change request cannot be empty.');
+      }
+
+      await this.draftAgreementRepository.saveOrUpdateResponse({
+        id: this.idGenerator.nextId(),
+        caseId: input.session_id,
+        draftVersion: input.draft_version,
+        participantId: participant.id,
+        responseType: input.response_type,
+        changeRequest: input.response_type === DraftAgreementResponseTypes.REQUEST_CHANGE ? changeRequest : null,
+        createdAt: this.clock.now()
+      });
+
+      const summary = await this.buildDraftAgreementDecisionSummary(session.id, input.draft_version);
+      if (summary.outcome) {
+        await this.draftAgreementRepository.upsertOutcome({
+          id: this.idGenerator.nextId(),
+          caseId: session.id,
+          draftVersion: input.draft_version,
+          outcome: summary.outcome,
+          createdAt: this.clock.now()
+        });
+      }
+      return summary;
+    });
+  }
+
+  async regenerateDraftAgreement(
+    ctx: ActionExecutionContext,
+    sessionId: string,
+    telegramUserId: string
+  ): Promise<DraftAgreementView> {
+    return this.executeIdempotent(ctx, async () => {
+      await this.requireParticipant(sessionId, telegramUserId);
+      const latestDraft = await this.draftAgreementRepository.findLatestByCaseId(sessionId);
+      if (!latestDraft) {
+        throw new IntakeValidationError('Draft agreement is not ready yet.');
+      }
+      const responses = await this.draftAgreementRepository.listResponses(sessionId, latestDraft.version);
+      const mergedChangeRequest = responses
+        .filter((entry) => entry.responseType === DraftAgreementResponseTypes.REQUEST_CHANGE)
+        .map((entry) => entry.changeRequest?.trim())
+        .filter((entry): entry is string => Boolean(entry))
+        .join('; ')
+        .trim();
+      if (!mergedChangeRequest) {
+        throw new IntakeValidationError('No change request found for regeneration.');
+      }
+
+      const loop = (await this.issueResolutionRepository.listLoopsByCaseId(sessionId)).find(
+        (entry) => entry.version === latestDraft.loopVersion
+      );
+      if (!loop) {
+        throw new IntakeValidationError('Issue loop was not found for regeneration.');
+      }
+      const sourceOption = loop.options.find((entry) => entry.option_id === latestDraft.sourceOptionId);
+      if (!sourceOption) {
+        throw new IntakeValidationError('Source option was not found for regeneration.');
+      }
+      const session = await this.requireParticipant(sessionId, telegramUserId);
+      const partyA = session.participants.find((entry) => entry.role === 'PARTY_A');
+      const partyB = session.participants.find((entry) => entry.role === 'PARTY_B');
+      if (!partyA || !partyB) {
+        throw new IntakeValidationError('Draft regeneration requires two participants.');
+      }
+      const partyAData = await this.intakeService.getPrivateIntakeData(sessionId, partyA.telegramUserId);
+      const partyBData = await this.intakeService.getPrivateIntakeData(sessionId, partyB.telegramUserId);
+
+      const draft = buildDraftAgreement({
+        id: this.idGenerator.nextId(),
+        caseId: sessionId,
+        version: latestDraft.version + 1,
+        loopVersion: latestDraft.loopVersion,
+        sourceOption,
+        sideA: {
+          desiredOutcome: requireNormalized(
+            partyAData.view.fields.desired_outcome.normalizedValue,
+            'party_a.desired_outcome'
+          ),
+          constraint: requireNormalized(
+            partyAData.view.fields.constraints.normalizedValue,
+            'party_a.constraints'
+          ),
+          flexibility: requireNormalized(
+            partyAData.view.fields.acceptable_concessions.normalizedValue,
+            'party_a.acceptable_concessions'
+          )
+        },
+        sideB: {
+          desiredOutcome: requireNormalized(
+            partyBData.view.fields.desired_outcome.normalizedValue,
+            'party_b.desired_outcome'
+          ),
+          constraint: requireNormalized(
+            partyBData.view.fields.constraints.normalizedValue,
+            'party_b.constraints'
+          ),
+          flexibility: requireNormalized(
+            partyBData.view.fields.acceptable_concessions.normalizedValue,
+            'party_b.acceptable_concessions'
+          )
+        },
+        mergedChangeRequest,
+        createdAt: this.clock.now()
+      });
+      await this.draftAgreementRepository.saveDraft(draft);
+      return mapDraftAgreement(draft);
+    });
+  }
+
+  async getLatestDraftAgreement(
+    sessionId: string,
+    telegramUserId: string
+  ): Promise<DraftAgreementView> {
+    await this.requireParticipant(sessionId, telegramUserId);
+    const latest = await this.draftAgreementRepository.findLatestByCaseId(sessionId);
+    if (!latest) {
+      throw new IntakeValidationError('Draft agreement is not ready yet.');
+    }
+    return mapDraftAgreement(latest);
+  }
+
+  async getDraftAgreementDecision(
+    sessionId: string,
+    telegramUserId: string,
+    draftVersion: number
+  ): Promise<DraftAgreementDecisionView> {
+    await this.requireParticipant(sessionId, telegramUserId);
+    return this.buildDraftAgreementDecisionSummary(sessionId, draftVersion);
+  }
+
+  private async buildDraftAgreementDecisionSummary(
+    sessionId: string,
+    draftVersion: number
+  ): Promise<DraftAgreementDecisionView> {
+    const responses = await this.draftAgreementRepository.listResponses(sessionId, draftVersion);
+    const confirmCount = responses.filter(
+      (entry) => entry.responseType === DraftAgreementResponseTypes.CONFIRM
+    ).length;
+    const rejectCount = responses.filter(
+      (entry) => entry.responseType === DraftAgreementResponseTypes.REJECT
+    ).length;
+    const changeCount = responses.filter(
+      (entry) => entry.responseType === DraftAgreementResponseTypes.REQUEST_CHANGE
+    ).length;
+
+    let outcome: DraftAgreementOutcomeType | null = null;
+    if (confirmCount >= 2) {
+      outcome = DraftAgreementOutcomeTypes.AGREEMENT;
+    } else if (rejectCount >= 2) {
+      outcome = DraftAgreementOutcomeTypes.DEADLOCK;
+    } else if (confirmCount >= 1 && (rejectCount >= 1 || changeCount >= 1)) {
+      outcome = DraftAgreementOutcomeTypes.PARTIAL_AGREEMENT;
+    }
+
+    return {
+      draft_version: draftVersion,
+      outcome,
+      confirm_count: confirmCount,
+      reject_count: rejectCount,
+      change_request_count: changeCount
+    };
   }
 
   private async getProblemSynthesisReviewDetails(
@@ -1347,6 +1671,26 @@ type IssueLoopInput = {
   };
 };
 
+type DraftAgreementInput = {
+  id: string;
+  caseId: string;
+  version: number;
+  loopVersion: number;
+  sourceOption: IssueResolutionOption;
+  sideA: {
+    desiredOutcome: string;
+    constraint: string;
+    flexibility: string;
+  };
+  sideB: {
+    desiredOutcome: string;
+    constraint: string;
+    flexibility: string;
+  };
+  mergedChangeRequest: string | null;
+  createdAt: Date;
+};
+
 const buildIssueResolutionLoop = (input: IssueLoopInput) => {
   const issueThemes = unique(
     extractSynthesisThemes(
@@ -1395,3 +1739,118 @@ const buildIssueResolutionLoop = (input: IssueLoopInput) => {
     shared_goal: input.sharedGoal
   };
 };
+
+const normalizeForConvergence = (value: string): string =>
+  value.replace(/\s+/g, ' ').trim().toLowerCase();
+
+const resolveDraftSource = (
+  loop: IssueResolutionLoop,
+  reactions: Array<{
+    optionId: string;
+    reactionType: IssueReactionType;
+    changeRequest: string | null;
+  }>
+): { optionId: string; mergedChangeRequest: string | null } | null => {
+  const byOption = new Map<
+    string,
+    {
+      accept: number;
+      editTexts: string[];
+    }
+  >();
+
+  for (const option of loop.options) {
+    byOption.set(option.option_id, { accept: 0, editTexts: [] });
+  }
+
+  for (const reaction of reactions) {
+    const target = byOption.get(reaction.optionId);
+    if (!target) {
+      continue;
+    }
+    if (reaction.reactionType === IssueReactionTypes.ACCEPT) {
+      target.accept += 1;
+    }
+    if (reaction.reactionType === IssueReactionTypes.REQUEST_CHANGE && reaction.changeRequest) {
+      target.editTexts.push(reaction.changeRequest);
+    }
+  }
+
+  for (const [optionId, metrics] of byOption.entries()) {
+    if (metrics.accept >= 2) {
+      return { optionId, mergedChangeRequest: null };
+    }
+  }
+
+  for (const [optionId, metrics] of byOption.entries()) {
+    if (metrics.editTexts.length < 2) {
+      continue;
+    }
+    const normalized = metrics.editTexts.map(normalizeForConvergence);
+    if (normalized[0] && normalized.every((entry) => entry === normalized[0])) {
+      return { optionId, mergedChangeRequest: metrics.editTexts[0] };
+    }
+  }
+
+  return null;
+};
+
+const cleanAction = (value: string): string => value.replace(/\s+/g, ' ').trim();
+
+const buildDraftAgreement = (input: DraftAgreementInput): DraftAgreement => {
+  const title = `Договорённость по вопросу: ${input.sourceOption.title}`;
+  const agreedActions = [
+    cleanAction(
+      `Стороны используют вариант «${input.sourceOption.title}» как базовый порядок действий.`
+    ),
+    cleanAction(
+      `Сторона A получает: ${input.sideA.desiredOutcome}. Сторона B получает: ${input.sideB.desiredOutcome}.`
+    ),
+    cleanAction(
+      `Все изменения согласуются заранее в чате и применяются только после подтверждения обеих сторон.`
+    )
+  ];
+
+  if (input.mergedChangeRequest) {
+    agreedActions.push(cleanAction(`Дополнение по запросу сторон: ${input.mergedChangeRequest}.`));
+  }
+
+  const boundaries = [
+    cleanAction(`Не допускается: ${input.sideA.constraint}.`),
+    cleanAction(`Не допускается: ${input.sideB.constraint}.`)
+  ];
+  const conditions = [
+    cleanAction(`Применяется к текущему спорному вопросу по теме «${input.sourceOption.title}».`),
+    cleanAction(
+      `Гибкость сторон: A — ${input.sideA.flexibility}; B — ${input.sideB.flexibility}.`
+    )
+  ];
+
+  return {
+    id: input.id,
+    caseId: input.caseId,
+    version: input.version,
+    loopVersion: input.loopVersion,
+    sourceOptionId: input.sourceOption.option_id,
+    agreementTitle: title,
+    agreedActions,
+    boundaries,
+    conditions,
+    fallbackRule:
+      'Если договорённость не выполняется два раза подряд, стороны возвращаются к вариантам и выбирают новый.',
+    reviewPoint: 'Пересмотр через 7 дней или раньше по совместному запросу.',
+    createdAt: input.createdAt
+  };
+};
+
+const mapDraftAgreement = (draft: DraftAgreement): DraftAgreementView => ({
+  draft_version: draft.version,
+  loop_version: draft.loopVersion,
+  source_option_id: draft.sourceOptionId,
+  agreement_title: draft.agreementTitle,
+  agreed_actions: draft.agreedActions,
+  boundaries: draft.boundaries,
+  conditions: draft.conditions,
+  fallback_rule: draft.fallbackRule,
+  review_point: draft.reviewPoint
+});

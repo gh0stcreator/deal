@@ -10,7 +10,7 @@ Help two participants resolve conflict through private structured intake, neutra
 - State machine driven progression.
 - Deterministic control flow; LLM usage limited to mapping/normalization tasks.
 
-## Implemented now (through Phase 3 issue-resolution loop)
+## Implemented now (through Phase 4 draft agreement generation)
 - Session/invite/join flow.
 - Dual explicit consent.
 - Resumable private intake with mandatory summary confirmation.
@@ -37,6 +37,12 @@ Help two participants resolve conflict through private structured intake, neutra
   - per-participant option reactions (`Подходит`, `Не подходит`, `Хочу изменить`)
   - private change requests per participant without cross-party raw leakage
   - loop summary status (`IN_PROGRESS`, `WORKABLE_PATH_FOUND`, `NO_WORKABLE_PATH`)
+- Draft agreement generation from converged issue-loop signals:
+  - strict trigger: both accepted same option OR converged edit signals
+  - structured draft payload (title, actions, boundaries, conditions, fallback, review point)
+  - participant draft responses (`Подтверждаю`, `Хочу изменить`, `Не подходит`)
+  - versioned draft regeneration after private change requests
+  - persisted outcomes: `AGREEMENT`, `PARTIAL_AGREEMENT`, `DEADLOCK`
 
 ## Phase 2 synthesis shape (implemented)
 - shared_goal
@@ -60,6 +66,14 @@ Help two participants resolve conflict through private structured intake, neutra
   - description
   - tradeoff_note
 - option_tradeoffs
+
+## Phase 4 draft agreement shape (implemented)
+- agreement_title
+- agreed_actions[]
+- boundaries[]
+- conditions[]
+- fallback_rule
+- review_point
 
 ## Intake UX (current guided flow)
 - Private intake is collected one focused question at a time.

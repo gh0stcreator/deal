@@ -95,17 +95,32 @@ Legacy reserved enum values still present for compatibility:
   - `WORKABLE_PATH_FOUND` (both accepted same option)
   - `NO_WORKABLE_PATH` (both rejected all options)
 
-12. `generate_proposals`
+12. `generate_draft_agreement`
+- trigger only when issue loop has converged signal:
+  - both accepted same option
+  - or both requested same correction on one option (normalized convergence)
+- input boundary: confirmed intake + confirmed issue loop signals only
+- output: structured draft agreement (actions, boundaries, conditions, fallback, review point)
+
+13. `submit_draft_response`
+- responses: `CONFIRM`, `REQUEST_CHANGE`, `REJECT`
+- `REQUEST_CHANGE` is private and feeds draft regeneration
+- persisted decision outcomes:
+  - `AGREEMENT` (both confirm)
+  - `PARTIAL_AGREEMENT` (mixed confirm/reject or confirm/change)
+  - `DEADLOCK` (both reject)
+
+14. `generate_proposals`
 - from: `READY_FOR_PROPOSAL`
 - to: `PROPOSALS_GENERATED`
 - writes versioned `ProposalSet`
 
-13. `submit_negotiation_actions`
+15. `submit_negotiation_actions`
 - from: `PROPOSALS_GENERATED` or `NEGOTIATION_IN_PROGRESS`
 - to: `NEGOTIATION_IN_PROGRESS` or terminal states
 - allowed actions only: `ACCEPT`, `REJECT`, `SELECT_PREFERRED`, `SUGGEST_EDIT`
 
-14. terminal outcomes
+16. terminal outcomes
 - `AGREEMENT_REACHED`: both accept same variant
 - `PARTIAL_AGREEMENT`: subset convergence with unresolved clauses
 - `DEADLOCK`: full rejection or repeated conflicting edit rounds

@@ -129,6 +129,39 @@ Structured synthesis payload (application-level shape):
 - `createdAt`
 - unique (`caseId`, `loopVersion`, `participantId`, `optionId`)
 
+## Draft agreement entities (Phase 4)
+### `DraftAgreement`
+- `id`
+- `caseId`
+- `version` (unique per case)
+- `loopVersion`
+- `sourceOptionId`
+- `agreementTitle`
+- `agreedActionsJson`
+- `boundariesJson`
+- `conditionsJson`
+- `fallbackRule`
+- `reviewPoint`
+- `createdAt`
+
+### `DraftAgreementResponse`
+- `id`
+- `caseId`
+- `draftVersion`
+- `participantId`
+- `responseType` (`CONFIRM`, `REQUEST_CHANGE`, `REJECT`)
+- `changeRequest` (nullable, private)
+- `createdAt`
+- unique (`caseId`, `draftVersion`, `participantId`)
+
+### `DraftAgreementOutcome`
+- `id`
+- `caseId`
+- `draftVersion`
+- `outcome` (`AGREEMENT`, `PARTIAL_AGREEMENT`, `DEADLOCK`)
+- `createdAt`
+- unique (`caseId`, `draftVersion`)
+
 ## Proposal/negotiation entities
 ### `ProposalSet`
 - `id`
@@ -189,6 +222,8 @@ Structured synthesis payload (application-level shape):
 - Synthesis consumes confirmed normalized intake models only.
 - Issue-resolution loop consumes confirmed structured intake + latest reviewed synthesis only.
 - Issue change requests stay private and are not exposed as raw text in shared summaries.
+- Draft agreements are generated only from converged issue-loop signals and confirmed intake constraints/outcomes.
+- Draft change requests are private and not surfaced as cross-party raw text.
 - Proposal generation consumes `MediationSummary` only.
 - Negotiation consumes proposal-layer entities only.
 - Transport views do not expose private raw intake artifacts.
