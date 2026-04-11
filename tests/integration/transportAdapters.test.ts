@@ -397,7 +397,7 @@ describe('transport adapters', () => {
     await sendTelegramCallback(setup.bot, 51, 101, 'menu:begin');
 
     const menu = setup.sentPayloads[setup.sentPayloads.length - 1];
-    expect(menu.text).toContain('Что хочешь сделать?');
+    expect(menu.text).toContain('Что вы хотите сделать?');
     expect(JSON.stringify(menu.reply_markup)).toContain('menu:create');
     expect(JSON.stringify(menu.reply_markup)).toContain('menu:join');
     expect(JSON.stringify(menu.reply_markup)).toContain('menu:status');
@@ -512,7 +512,7 @@ describe('transport adapters', () => {
     await sendTelegramCallback(bot, 63, 101, 'create_topic:confirm_final');
     const instructionReply = replies[replies.length - 2];
     expect(instructionReply).toContain('Готово.');
-    expect(instructionReply).toContain('Отправь следующее сообщение второму человеку');
+    expect(instructionReply).toContain('Отправьте следующее сообщение второму человеку');
     const creatorReply = replies[replies.length - 1];
     expect(creatorReply).toContain('user хочет обсудить с вами:');
     expect(creatorReply).toContain('«Сроки и оплата за проект»');
@@ -532,7 +532,7 @@ describe('transport adapters', () => {
     expect(session?.problemTopic).toBe('Сроки и оплата за проект');
 
     await sendTelegramCommand(bot, 65, 102, `/start join_${inviteToken}`);
-    expect(replies.some((entry) => entry.includes('Ты подключился к договорённости.'))).toBe(true);
+    expect(replies.some((entry) => entry.includes('Вы подключились к договорённости.'))).toBe(true);
     expect(replies.some((entry) => entry.includes('Второй человек подключился.'))).toBe(true);
     expect(replies.some((entry) => entry.includes('Ждём, пока он подтвердит участие.'))).toBe(true);
     const creatorNotifyPayload = sentPayloads.find((payload) =>
@@ -553,11 +553,11 @@ describe('transport adapters', () => {
     expect(replies[replies.length - 1]).toContain('Всё верно?');
 
     await sendTelegramCallback(bot, 68, 101, `problem:edit:${sessionId}`);
-    expect(replies[replies.length - 1]).toContain('Отправь исправленный вариант.');
+    expect(replies[replies.length - 1]).toContain('Отправьте исправленный вариант.');
     await sendTelegramText(bot, 69, 101, 'Хотим договориться о дедлайнах и оплате');
     expect(replies[replies.length - 1]).toContain('Я записал это так:');
     await sendTelegramCallback(bot, 70, 101, `problem:confirm:${sessionId}`);
-    expect(replies[replies.length - 1]).toContain('Ты подтвердил свою формулировку.');
+    expect(replies[replies.length - 1]).toContain('Вы подтвердили свою формулировку.');
     expect(replies[replies.length - 1]).toContain('Ждём второго человека.');
 
     await sendTelegramText(bot, 71, 102, 'Нужно договориться о формате и дедлайнах');
@@ -691,10 +691,10 @@ describe('transport adapters', () => {
     });
 
     await sendTelegramCallback(bot, 70, 102, 'menu:join');
-    expect(replies[replies.length - 1]).toContain('Отправь ссылку-приглашение или токен');
+    expect(replies[replies.length - 1]).toContain('Отправьте ссылку-приглашение или токен');
 
     await sendTelegramText(bot, 71, 102, created.inviteToken);
-    expect(replies.some((message) => message.includes('Ты подключился к договорённости'))).toBe(true);
+    expect(replies.some((message) => message.includes('Вы подключились к договорённости'))).toBe(true);
   });
 
   it('keeps topic input pending after create failure so user can retry by sending text again', async () => {
@@ -718,7 +718,7 @@ describe('transport adapters', () => {
     await sendTelegramCallback(setup.bot, 82, 101, 'create_topic:confirm_draft');
     expect(setup.replies[setup.replies.length - 1]).toContain('Отправляем?');
     await sendTelegramCallback(setup.bot, 83, 101, 'create_topic:confirm_final');
-    expect(setup.replies[setup.replies.length - 1]).toContain('Что-то пошло не так. Попробуй ещё раз.');
+    expect(setup.replies[setup.replies.length - 1]).toContain('Что-то пошло не так. Попробуйте ещё раз.');
 
     await sendTelegramCallback(setup.bot, 84, 101, 'create_topic:confirm_final');
     expect(setup.replies[setup.replies.length - 2]).toContain('Готово.');
@@ -757,7 +757,7 @@ describe('transport adapters', () => {
 
     await sendTelegramCommand(setup.bot, 300, 999, `/select_preferred ${setup.sessionId} BALANCED`);
     const telegramLast = setup.replies[setup.replies.length - 1];
-    expect(telegramLast.toLowerCase()).toContain('ты не можешь сделать это сейчас');
+    expect(telegramLast.toLowerCase()).toContain('вы не можете сделать это сейчас');
 
     const http = await setup.app.inject({
       method: 'POST',
@@ -777,7 +777,7 @@ describe('transport adapters', () => {
 
     await sendTelegramCommand(setup.bot, 400, 101, `/confirm_summary ${setup.sessionId}`);
     const telegramLast = setup.replies[setup.replies.length - 1];
-    expect(telegramLast.toLowerCase()).toContain('ты не можешь сделать это сейчас');
+    expect(telegramLast.toLowerCase()).toContain('вы не можете сделать это сейчас');
 
     const http = await setup.app.inject({
       method: 'POST',

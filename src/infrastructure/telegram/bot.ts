@@ -274,7 +274,7 @@ export const buildTelegramBot = (
 
     await sendReplyWithRetry(
       ctx,
-      'Слишком много запросов. Попробуй через несколько секунд.',
+      'Слишком много запросов. Попробуйте через несколько секунд.',
       {
         correlation_id: makeCorrelationId(ctx),
         action_type: config.action_type
@@ -355,13 +355,13 @@ export const buildTelegramBot = (
     const text = [
       'Важно:',
       '',
-      'Пиши как есть, не смягчая.',
+      'Пишите как есть, не смягчая.',
       'Другой человек не увидит это сообщение напрямую.',
       '',
       'Постарайся описать:',
       '— что сейчас происходит',
-      '— что тебе важно в этой ситуации',
-      '— чего ты хочешь дальше',
+      '— что вам важно в этой ситуации',
+      '— чего вы хотите дальше',
       '',
       'Дальше я сам соберу общую картину.',
       'Это станет основой, от которой мы будем двигаться дальше.',
@@ -444,7 +444,7 @@ export const buildTelegramBot = (
       const statusLines = ['Текущий статус:'];
       if (session.participants.length === 1) {
         statusLines.push('Пока подключён только один участник.');
-        statusLines.push('Дальше: дождись второго человека.');
+        statusLines.push('Дальше: дождитесь второго человека.');
       } else if (consentCount === 2) {
         statusLines.push('Обе стороны подтвердили участие.');
         statusLines.push('Дальше: переходите к обсуждению решения.');
@@ -452,12 +452,12 @@ export const buildTelegramBot = (
         statusLines.push('Второй человек подключился.');
         statusLines.push('Ждём, пока он подтвердит участие.');
       } else if (self?.consentGrantedAt) {
-        statusLines.push('Ты подтвердил участие.');
+        statusLines.push('Вы подтвердили участие.');
         statusLines.push('Ждём второго человека.');
       } else if (consentPending) {
         statusLines.push('Оба участника подключены.');
         statusLines.push('Ожидаем подтверждения.');
-        statusLines.push('Дальше: нажми «Подтвердить участие».');
+        statusLines.push('Дальше: нажмите «Подтвердить участие».');
       } else {
         statusLines.push('Оба участника подключены.');
         statusLines.push('Ожидаем подтверждения.');
@@ -522,8 +522,8 @@ export const buildTelegramBot = (
       await sendReplyWithRetry(
         ctx,
         [
-          'Ты подключился к договорённости.',
-          'Дальше: нажми «Подтвердить участие».'
+          'Вы подключились к договорённости.',
+          'Дальше: нажмите «Подтвердить участие».'
         ].join('\n'),
         {
           correlation_id: correlationId,
@@ -575,7 +575,7 @@ export const buildTelegramBot = (
       if (error instanceof DomainError && error.code === 'DUPLICATE_JOIN') {
         await sendReplyWithRetry(
           ctx,
-          ['Ты уже подключён.', 'Нужен второй человек. Отправь ему приглашение.'].join('\n'),
+          ['Вы уже подключены.', 'Нужен второй человек. Отправьте ему приглашение.'].join('\n'),
           {
             correlation_id: correlationId,
             action_type: actionType
@@ -640,7 +640,7 @@ export const buildTelegramBot = (
         .row()
         .text('Посмотреть статус', `status:${result.session_id}`);
 
-      const instructionText = ['Готово.', '', 'Отправь следующее сообщение второму человеку 👇'].join('\n');
+      const instructionText = ['Готово.', '', 'Отправьте следующее сообщение второму человеку 👇'].join('\n');
       const inviteText = [
         `${initiatorName} хочет обсудить с вами:`,
         `«${problemTopic}»`,
@@ -705,7 +705,7 @@ export const buildTelegramBot = (
       const feedback =
         result.state === SessionStates.CONSENTED
           ? ['Готово. Вы оба подтвердили участие.', 'Дальше: переходите к обсуждению решения.'].join('\n')
-          : ['Ты подтвердил участие.', 'Ждём второго человека.'].join('\n');
+          : ['Вы подтвердили участие.', 'Ждём второго человека.'].join('\n');
 
       await sendReplyWithRetry(
         ctx,
@@ -735,8 +735,8 @@ export const buildTelegramBot = (
         const consentCount = session.participants.filter((participant) => Boolean(participant.consentGrantedAt)).length;
         const text =
           consentCount < 2
-            ? ['Ты уже подтвердил участие.', 'Нужен второй человек. Отправь ему приглашение.'].join('\n')
-            : 'Ты уже подтвердил участие.';
+            ? ['Вы уже подтвердили участие.', 'Нужен второй человек. Отправьте ему приглашение.'].join('\n')
+            : 'Вы уже подтвердили участие.';
         await sendReplyWithRetry(
           ctx,
           text,
@@ -812,7 +812,7 @@ export const buildTelegramBot = (
       pendingInput.set(telegramUserId, 'JOIN_TOKEN');
       await sendReplyWithRetry(
         ctx,
-        'Отправь ссылку-приглашение или токен.',
+        'Отправьте ссылку-приглашение или токен.',
         {
           correlation_id: makeCorrelationId(ctx),
           action_type: 'join_session_prompt'
@@ -823,7 +823,7 @@ export const buildTelegramBot = (
 
     const inviteToken = extractInviteToken(args[0]);
     if (!inviteToken) {
-      await sendReplyWithRetry(ctx, 'Похоже, в приглашении ошибка. Попробуй ещё раз или открой ссылку', {
+      await sendReplyWithRetry(ctx, 'Похоже, в приглашении ошибка. Попробуйте ещё раз или откройте ссылку', {
         correlation_id: makeCorrelationId(ctx),
         action_type: 'join_session'
       });
@@ -1314,7 +1314,7 @@ export const buildTelegramBot = (
     if (action === 'begin') {
       await sendReplyWithRetry(
         ctx,
-        'Что хочешь сделать?',
+        'Что вы хотите сделать?',
         {
           correlation_id: makeCorrelationId(ctx),
           action_type: 'menu_begin'
@@ -1342,7 +1342,7 @@ export const buildTelegramBot = (
       pendingInput.set(telegramUserId, 'JOIN_TOKEN');
       await sendReplyWithRetry(
         ctx,
-        'Отправь ссылку-приглашение или токен.',
+        'Отправьте ссылку-приглашение или токен.',
         {
           correlation_id: makeCorrelationId(ctx),
           action_type: 'join_prompt'
@@ -1359,7 +1359,7 @@ export const buildTelegramBot = (
 
     await sendReplyWithRetry(
       ctx,
-      'У тебя пока нет активной договорённости',
+      'У вас пока нет активной договорённости',
       {
         correlation_id: makeCorrelationId(ctx),
         action_type: 'status_prompt'
@@ -1382,7 +1382,7 @@ export const buildTelegramBot = (
     problemSynthesisSent.delete(sessionId);
     await sendReplyWithRetry(
       ctx,
-      'Отправь исправленный вариант.',
+      'Отправьте исправленный вариант.',
       {
         correlation_id: makeCorrelationId(ctx),
         action_type: 'problem_edit_prompt'
@@ -1399,7 +1399,7 @@ export const buildTelegramBot = (
     if (problemSynthesisSent.has(sessionId)) {
       await sendReplyWithRetry(
         ctx,
-        'Ты уже подтвердил свою формулировку.',
+        'Вы уже подтвердили свою формулировку.',
         {
           correlation_id: makeCorrelationId(ctx),
           action_type: 'problem_confirm'
@@ -1457,7 +1457,7 @@ export const buildTelegramBot = (
 
     await sendReplyWithRetry(
       ctx,
-      ['Ты подтвердил свою формулировку.', 'Ждём второго человека.'].join('\n'),
+      ['Вы подтвердили свою формулировку.', 'Ждём второго человека.'].join('\n'),
       {
         correlation_id: makeCorrelationId(ctx),
         action_type: 'problem_confirm'
@@ -1489,7 +1489,7 @@ export const buildTelegramBot = (
       pendingInput.set(telegramUserId, 'CREATE_TOPIC');
       await sendReplyWithRetry(
         ctx,
-        'Отправь формулировку ещё раз.',
+        'Отправьте формулировку ещё раз.',
         {
           correlation_id: makeCorrelationId(ctx),
           action_type: 'create_topic_rephrase'
@@ -1614,7 +1614,7 @@ export const buildTelegramBot = (
     await sendReplyWithRetry(
       ctx,
       [
-        'Отправь это приглашение второму человеку:',
+        'Отправьте это приглашение второму человеку:',
         '',
         `${invite.initiatorName} хочет обсудить с вами:`,
         `«${invite.topic}»`,
@@ -1791,7 +1791,7 @@ export const buildTelegramBot = (
       if (!topic) {
         await sendReplyWithRetry(
           ctx,
-          'Тема должна быть короткой: до 120 символов. Попробуй ещё раз.',
+          'Тема должна быть короткой: до 120 символов. Попробуйте ещё раз.',
           {
             correlation_id: makeCorrelationId(ctx),
             action_type: 'create_topic_validate'
@@ -1816,7 +1816,7 @@ export const buildTelegramBot = (
     if (waiting === 'JOIN_TOKEN') {
       const tokenValue = extractInviteToken(text);
       if (!tokenValue) {
-        await sendReplyWithRetry(ctx, 'Похоже, в приглашении ошибка. Попробуй ещё раз или открой ссылку', {
+        await sendReplyWithRetry(ctx, 'Похоже, в приглашении ошибка. Попробуйте ещё раз или откройте ссылку', {
           correlation_id: makeCorrelationId(ctx),
           action_type: 'join_token_parse'
         });
@@ -1842,7 +1842,7 @@ export const buildTelegramBot = (
         return;
       }
 
-      await sendReplyWithRetry(ctx, 'Неизвестная команда. Нажми /start и выбери действие.', {
+      await sendReplyWithRetry(ctx, 'Неизвестная команда. Нажмите /start и выберите действие.', {
         correlation_id: makeCorrelationId(ctx),
         action_type: 'invalid_command'
       });

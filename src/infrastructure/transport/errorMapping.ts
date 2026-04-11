@@ -24,19 +24,19 @@ const codeToStatus: Record<string, number> = {
 };
 
 const codeToTelegramText: Record<string, string> = {
-  INVALID_STATE_TRANSITION: 'Ты не можешь сделать это сейчас.',
-  TRANSPORT_ACCESS_DENIED: 'Ты не можешь сделать это сейчас.',
-  INTAKE_ACCESS_DENIED: 'Ты не можешь сделать это сейчас.',
-  PARTICIPANT_NOT_IN_SESSION: 'Ты не можешь сделать это сейчас.',
+  INVALID_STATE_TRANSITION: 'Вы не можете сделать это сейчас.',
+  TRANSPORT_ACCESS_DENIED: 'Вы не можете сделать это сейчас.',
+  INTAKE_ACCESS_DENIED: 'Вы не можете сделать это сейчас.',
+  PARTICIPANT_NOT_IN_SESSION: 'Вы не можете сделать это сейчас.',
   SESSION_NOT_FOUND: 'Не получилось найти договорённость.',
   INVALID_INVITE_TOKEN: 'Приглашение недействительно или устарело.',
   EXPIRED_INVITE_TOKEN: 'Приглашение недействительно или устарело.',
-  INTAKE_CONFLICT: 'Ты не можешь сделать это сейчас.',
-  NEGOTIATION_CONFLICT: 'Ты не можешь сделать это сейчас.',
-  SUMMARY_MISMATCH: 'Ты не можешь сделать это сейчас.',
-  PROPOSAL_PRECONDITION_FAILED: 'Ты не можешь сделать это сейчас.',
-  NEGOTIATION_PRECONDITION_FAILED: 'Ты не можешь сделать это сейчас.',
-  INTAKE_VALIDATION_ERROR: 'Ты не можешь сделать это сейчас.'
+  INTAKE_CONFLICT: 'Вы не можете сделать это сейчас.',
+  NEGOTIATION_CONFLICT: 'Вы не можете сделать это сейчас.',
+  SUMMARY_MISMATCH: 'Вы не можете сделать это сейчас.',
+  PROPOSAL_PRECONDITION_FAILED: 'Вы не можете сделать это сейчас.',
+  NEGOTIATION_PRECONDITION_FAILED: 'Вы не можете сделать это сейчас.',
+  INTAKE_VALIDATION_ERROR: 'Вы не можете сделать это сейчас.'
 };
 
 export const mapHttpError = (error: unknown): { status: number; body: { code: string; message: string } } => {
@@ -69,5 +69,5 @@ export const mapTelegramErrorText = (error: unknown): string => {
     return codeToTelegramText[error.code] ?? error.message;
   }
 
-  return 'Что-то пошло не так. Попробуй ещё раз.';
+  return 'Что-то пошло не так. Попробуйте ещё раз.';
 };
