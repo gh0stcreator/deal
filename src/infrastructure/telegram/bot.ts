@@ -7,6 +7,7 @@ import {
   StructuredIntakeAnswerInput
 } from '../../application/services/ProtocolGatewayService.js';
 import { IntakeField } from '../../domain/intake/types.js';
+import { IssueReactionTypes } from '../../domain/issue/types.js';
 import { SuggestEditOperations } from '../../domain/negotiation/types.js';
 import { ProposalVariantTypes } from '../../domain/proposal/types.js';
 import { ParticipantRoles, SessionStates } from '../../domain/session/types.js';
@@ -245,6 +246,11 @@ export const buildTelegramBot = (
   >();
   const pendingSynthesisClarificationSession = new Map<string, string>();
   const problemSynthesisSent = new Set<string>();
+  const issueLoopSent = new Set<string>();
+  const pendingIssueChange = new Map<
+    string,
+    { sessionId: string; loopVersion: number; optionId: string }
+  >();
   const lastSessionByUser = new Map<string, string>();
   const lastInviteByUser = new Map<
     string,
@@ -634,6 +640,119 @@ export const buildTelegramBot = (
       view.possible_zone_of_agreement
     ].join('\n');
 
+  const issueOptionKeyboard = (sessionId: string, loopVersion: number, optionId: string) =>
+    new InlineKeyboard()
+      .text('Подходит', `issue:react:${sessionId}:${loopVersion}:${optionId}:accept`)
+      .row()
+      .text('Не подходит', `issue:react:${sessionId}:${loopVersion}:${optionId}:reject`)
+      .row()
+      .text('Хочу изменить', `issue:react:${sessionId}:${loopVersion}:${optionId}:edit`);
+
+  const renderIssueFraming = (
+    loop: Awaited<ReturnType<ProtocolGatewayService['generateIssueResolutionLoop']>>
+  ): string =>
+    [
+      'Похоже, основной вопрос сейчас такой:',
+      loop.issue_title,
+      '',
+      'С одной стороны важно...',
+      loop.side_a_priority,
+      '',
+      'С другой стороны важно...',
+      loop.side_b_priority
+    ].join('\n');
+
+  const renderIssueOption = (
+    option: Awaited<ReturnType<ProtocolGatewayService['generateIssueResolutionLoop']>>['options'][number]
+  ): string =>
+    [
+      `Вариант: ${option.title}`,
+      option.description,
+      '',
+      `Компромисс: ${option.tradeoff_note}`
+    ].join('\n');
+
+  const maybeStartIssueLoop = async (
+    sessionId: string,
+    triggerTelegramUserId: string,
+    source: 'current' | 'direct',
+    ctx?: Context
+  ) => {
+    if (issueLoopSent.has(sessionId)) {
+      return;
+    }
+
+    const review = await gateway.getProblemSynthesisDogfoodExport(sessionId, triggerTelegramUserId);
+    if (review.confirm_count + review.clarify_count < 2) {
+      return;
+    }
+
+    issueLoopSent.add(sessionId);
+    try {
+      const loop = await gateway.generateIssueResolutionLoop(
+        {
+          correlation_id:
+            source === 'current' && ctx
+              ? makeCorrelationId(ctx)
+              : `tg:issue_loop:${sessionId}:${triggerTelegramUserId}`,
+          channel: 'TELEGRAM',
+          idempotency_key: `tg:issue_loop:${sessionId}`,
+          action_type: 'issue_loop_generate',
+          case_id: sessionId,
+          participant_id: triggerTelegramUserId,
+          payload: { session_id: sessionId }
+        },
+        sessionId,
+        triggerTelegramUserId
+      );
+
+      const session = await gateway.getSessionStatus(sessionId, triggerTelegramUserId);
+      for (const participant of session.participants) {
+        await sendDirectWithRetry(
+          participant.telegramUserId,
+          renderIssueFraming(loop),
+          {
+            correlation_id: `tg:issue_loop_framing:${sessionId}:${participant.telegramUserId}`,
+            action_type: 'issue_loop_framing'
+          }
+        );
+        await sendDirectWithRetry(
+          participant.telegramUserId,
+          'Вот варианты, которые могут сработать:',
+          {
+            correlation_id: `tg:issue_loop_intro:${sessionId}:${participant.telegramUserId}`,
+            action_type: 'issue_loop_options'
+          }
+        );
+        for (const option of loop.options) {
+          await sendDirectWithRetry(
+            participant.telegramUserId,
+            renderIssueOption(option),
+            {
+              correlation_id: `tg:issue_loop_option:${sessionId}:${participant.telegramUserId}:${option.option_id}`,
+              action_type: 'issue_loop_option'
+            },
+            {
+              reply_markup: issueOptionKeyboard(sessionId, loop.loop_version, option.option_id)
+            }
+          );
+        }
+      }
+    } catch (error) {
+      issueLoopSent.delete(sessionId);
+      if (source === 'current' && ctx) {
+        await sendReplyWithRetry(
+          ctx,
+          mapTelegramErrorText(error),
+          {
+            correlation_id: makeCorrelationId(ctx),
+            action_type: 'issue_loop_generate'
+          }
+        );
+      }
+    }
+  };
+
   const describeSessionForUser = async (
     ctx: Context,
     sessionId: string,
@@ -984,6 +1103,7 @@ export const buildTelegramBot = (
     pendingMediationIntakeSession.delete(telegramUserId);
     pendingMediationIntakeStep.delete(telegramUserId);
     pendingMediationIntakeDraft.delete(telegramUserId);
+    pendingIssueChange.delete(telegramUserId);
     await sendReplyWithRetry(
       ctx,
       [
@@ -1781,6 +1901,7 @@ export const buildTelegramBot = (
           action_type: 'synthesis_ack'
         }
       );
+      await maybeStartIssueLoop(sessionId, telegramUserId, 'current', ctx);
     } catch (error) {
       await sendReplyWithRetry(
         ctx,
@@ -1821,6 +1942,7 @@ export const buildTelegramBot = (
           action_type: 'synthesis_clarify_prompt'
         }
       );
+      await maybeStartIssueLoop(sessionId, telegramUserId, 'current', ctx);
     } catch (error) {
       await sendReplyWithRetry(
         ctx,
@@ -1892,6 +2014,83 @@ export const buildTelegramBot = (
     );
   });
 
+  bot.callbackQuery(
+    /^issue:react:([A-Za-z0-9_-]{3,}):(\d+):([A-Z0-9_]+):(accept|reject|edit)$/,
+    async (ctx) => {
+      await safeAnswerCallback(ctx);
+      const sessionId = ctx.match[1];
+      const loopVersion = Number(ctx.match[2]);
+      const optionId = ctx.match[3];
+      const action = ctx.match[4];
+      const telegramUserId = userIdFromCtx(ctx);
+
+      if (action === 'edit') {
+        pendingIssueChange.set(telegramUserId, { sessionId, loopVersion, optionId });
+        await sendReplyWithRetry(
+          ctx,
+          'Что именно в этом варианте нужно изменить?',
+          {
+            correlation_id: makeCorrelationId(ctx),
+            action_type: 'issue_reaction_edit_prompt'
+          }
+        );
+        return;
+      }
+
+      const reactionType =
+        action === 'accept' ? IssueReactionTypes.ACCEPT : IssueReactionTypes.REJECT;
+      try {
+        const summary = await gateway.submitIssueOptionReaction(
+          {
+            correlation_id: makeCorrelationId(ctx),
+            channel: 'TELEGRAM',
+            idempotency_key: makeKey(ctx, `issue_react_${loopVersion}_${optionId}_${action}`),
+            action_type: 'issue_option_reaction',
+            case_id: sessionId,
+            participant_id: telegramUserId,
+            payload: {
+              session_id: sessionId,
+              loop_version: loopVersion,
+              option_id: optionId,
+              reaction_type: reactionType
+            }
+          },
+          {
+            session_id: sessionId,
+            telegram_user_id: telegramUserId,
+            loop_version: loopVersion,
+            option_id: optionId,
+            reaction_type: reactionType
+          }
+        );
+
+        const feedback =
+          summary.status === 'WORKABLE_PATH_FOUND'
+            ? 'Похоже, есть рабочий вариант. Зафиксировал реакцию.'
+            : summary.status === 'NO_WORKABLE_PATH'
+              ? 'Пока рабочий вариант не найден. Зафиксировал реакцию.'
+              : 'Реакцию зафиксировал. Дальше ждём ответ второй стороны.';
+        await sendReplyWithRetry(
+          ctx,
+          feedback,
+          {
+            correlation_id: makeCorrelationId(ctx),
+            action_type: 'issue_option_reaction'
+          }
+        );
+      } catch (error) {
+        await sendReplyWithRetry(
+          ctx,
+          mapTelegramErrorText(error),
+          {
+            correlation_id: makeCorrelationId(ctx),
+            action_type: 'issue_option_reaction'
+          }
+        );
+      }
+    }
+  );
+
   bot.callbackQuery(/^status:([A-Za-z0-9_-]{3,})$/, async (ctx) => {
     await safeAnswerCallback(ctx);
     const sessionId = ctx.match[1];
@@ -1945,6 +2144,7 @@ export const buildTelegramBot = (
             action_type: 'synthesis_clarify'
           }
         );
+        await maybeStartIssueLoop(pendingClarificationForSession, telegramUserId, 'current', ctx);
         return;
       } catch (error) {
         await sendReplyWithRetry(
@@ -1957,6 +2157,74 @@ export const buildTelegramBot = (
         );
         return;
       }
+    }
+
+    const pendingIssueEdit = pendingIssueChange.get(telegramUserId);
+    if (pendingIssueEdit) {
+      const input = text.trim();
+      if (!input) {
+        await sendReplyWithRetry(
+          ctx,
+          'Что именно в этом варианте нужно изменить?',
+          {
+            correlation_id: makeCorrelationId(ctx),
+            action_type: 'issue_reaction_edit'
+          }
+        );
+        return;
+      }
+      try {
+        const summary = await gateway.submitIssueOptionReaction(
+          {
+            correlation_id: makeCorrelationId(ctx),
+            channel: 'TELEGRAM',
+            idempotency_key: makeKey(
+              ctx,
+              `issue_react_edit_${pendingIssueEdit.loopVersion}_${pendingIssueEdit.optionId}`
+            ),
+            action_type: 'issue_option_reaction',
+            case_id: pendingIssueEdit.sessionId,
+            participant_id: telegramUserId,
+            payload: {
+              session_id: pendingIssueEdit.sessionId,
+              loop_version: pendingIssueEdit.loopVersion,
+              option_id: pendingIssueEdit.optionId,
+              reaction_type: IssueReactionTypes.REQUEST_CHANGE
+            }
+          },
+          {
+            session_id: pendingIssueEdit.sessionId,
+            telegram_user_id: telegramUserId,
+            loop_version: pendingIssueEdit.loopVersion,
+            option_id: pendingIssueEdit.optionId,
+            reaction_type: IssueReactionTypes.REQUEST_CHANGE,
+            change_request: input
+          }
+        );
+        pendingIssueChange.delete(telegramUserId);
+        const feedback =
+          summary.status === 'WORKABLE_PATH_FOUND'
+            ? 'Изменение зафиксировал. Похоже, рабочий вариант уже есть.'
+            : 'Изменение зафиксировал. Ждём реакцию второй стороны.';
+        await sendReplyWithRetry(
+          ctx,
+          feedback,
+          {
+            correlation_id: makeCorrelationId(ctx),
+            action_type: 'issue_reaction_edit'
+          }
+        );
+      } catch (error) {
+        await sendReplyWithRetry(
+          ctx,
+          mapTelegramErrorText(error),
+          {
+            correlation_id: makeCorrelationId(ctx),
+            action_type: 'issue_reaction_edit'
+          }
+        );
+      }
+      return;
     }
 
     const pendingMediationSession = pendingMediationIntakeSession.get(telegramUserId);

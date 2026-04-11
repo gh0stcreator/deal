@@ -96,6 +96,12 @@ enum SynthesisReactionType {
   CLARIFY
 }
 
+enum IssueReactionType {
+  ACCEPT
+  REJECT
+  REQUEST_CHANGE
+}
+
 model MediationSession {
   id                String                @id @default(cuid())
   state             SessionState
@@ -108,6 +114,8 @@ model MediationSession {
   summaries         MediationSummary[]
   problemSyntheses  ProblemSynthesisSnapshot[]
   synthesisReviews  SynthesisReviewSignal[]
+  issueLoops        IssueResolutionLoop[]
+  issueReactions    IssueResolutionReaction[]
   proposalSets      ProposalSet[]
   negotiationRounds NegotiationRound[]
   protocolEvents    ProtocolEvent[]
@@ -125,9 +133,48 @@ model SessionParticipant {
   session           MediationSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   intake            ParticipantIntake?
   synthesisReviews  SynthesisReviewSignal[]
+  issueReactions    IssueResolutionReaction[]
 
   @@unique([sessionId, role])
   @@unique([sessionId, telegramUserId])
+}
+
+model IssueResolutionLoop {
+  id                  String                  @id
+  caseId              String
+  version             Int
+  synthesisVersion    Int
+  issueTitle          String
+  sideAPriority       String
+  sideBPriority       String
+  issueConstraintsJson Json
+  optionsJson         Json
+  optionTradeoffsJson Json
+  createdAt           DateTime                @default(now())
+
+  session             MediationSession        @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  reactions           IssueResolutionReaction[]
+
+  @@unique([caseId, version])
+  @@index([caseId])
+}
+
+model IssueResolutionReaction {
+  id            String            @id
+  caseId        String
+  loopVersion   Int
+  participantId String
+  optionId      String
+  reactionType  IssueReactionType
+  changeRequest String?
+  createdAt     DateTime          @default(now())
+
+  session       MediationSession  @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  participant   SessionParticipant @relation(fields: [participantId], references: [id], onDelete: Cascade)
+  loop          IssueResolutionLoop @relation(fields: [caseId, loopVersion], references: [caseId, version], onDelete: Cascade)
+
+  @@unique([caseId, loopVersion, participantId, optionId])
+  @@index([caseId, loopVersion])
 }
 
 model ProblemSynthesisSnapshot {

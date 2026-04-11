@@ -10,6 +10,7 @@ import { ProposalSetRepository } from '../ports/ProposalSetRepository.js';
 import { SessionRepository } from '../ports/SessionRepository.js';
 import { ProtocolTrackingRepository } from '../ports/ProtocolTrackingRepository.js';
 import { SynthesisReviewRepository } from '../ports/SynthesisReviewRepository.js';
+import { IssueResolutionRepository } from '../ports/IssueResolutionRepository.js';
 import {
   IdempotencyRecord,
   ProtocolEventOutcomes,
@@ -17,7 +18,7 @@ import {
 } from '../../domain/protocol/types.js';
 import { ProposalSet, ProposalVariantType } from '../../domain/proposal/types.js';
 import { SessionNotFoundError } from '../../domain/session/errors.js';
-import { SessionState, SessionStates } from '../../domain/session/types.js';
+import { MediationSession, SessionState, SessionStates } from '../../domain/session/types.js';
 import { IntakeValidationError } from '../../domain/intake/errors.js';
 import { IntakeField } from '../../domain/intake/types.js';
 import { SynthesisPreconditionError } from '../../domain/synthesis/errors.js';
@@ -33,6 +34,13 @@ import {
   SynthesisReactionTypes,
   SynthesisReactionType
 } from '../../domain/synthesis/types.js';
+import {
+  IssueLoopStatuses,
+  IssueReactionType,
+  IssueReactionTypes,
+  IssueResolutionLoop,
+  IssueResolutionOption
+} from '../../domain/issue/types.js';
 
 const RETRY_WINDOW_MS = 20_000;
 
@@ -112,6 +120,34 @@ export interface ProblemSynthesisDogfoodExport {
   clarify_count: number;
 }
 
+export interface IssueResolutionLoopView {
+  loop_version: number;
+  synthesis_version: number;
+  issue_title: string;
+  side_a_priority: string;
+  side_b_priority: string;
+  issue_constraints: string[];
+  options: Array<{
+    option_id: string;
+    title: string;
+    description: string;
+    tradeoff_note: string;
+  }>;
+  option_tradeoffs: string[];
+}
+
+export interface IssueResolutionSummaryView {
+  loop_version: number;
+  status: (typeof IssueLoopStatuses)[keyof typeof IssueLoopStatuses];
+  workable_option_id: string | null;
+  option_reactions: Array<{
+    option_id: string;
+    accept_count: number;
+    reject_count: number;
+    change_request_count: number;
+  }>;
+}
+
 export interface StructuredIntakeAnswerInput {
   field: IntakeField;
   value: string;
@@ -127,6 +163,24 @@ class NoopSynthesisReviewRepository implements SynthesisReviewRepository {
   async saveOrUpdateReviewSignal(): Promise<void> {}
 
   async listReviewSignals(): Promise<never[]> {
+    return [];
+  }
+}
+
+class NoopIssueResolutionRepository implements IssueResolutionRepository {
+  async findLatestLoopByCaseId(): Promise<IssueResolutionLoop | null> {
+    return null;
+  }
+
+  async saveLoop(): Promise<void> {}
+
+  async listLoopsByCaseId(): Promise<IssueResolutionLoop[]> {
+    return [];
+  }
+
+  async saveOrUpdateReaction(): Promise<void> {}
+
+  async listReactions(): Promise<never[]> {
     return [];
   }
 }
@@ -151,7 +205,8 @@ export class ProtocolGatewayService {
     private readonly idGenerator: IdGenerator,
     private readonly clock: Clock,
     private readonly logger: AppLogger = createNoopLogger(),
-    private readonly synthesisReviewRepository: SynthesisReviewRepository = new NoopSynthesisReviewRepository()
+    private readonly synthesisReviewRepository: SynthesisReviewRepository = new NoopSynthesisReviewRepository(),
+    private readonly issueResolutionRepository: IssueResolutionRepository = new NoopIssueResolutionRepository()
   ) {}
 
   async createSession(
@@ -543,6 +598,181 @@ export class ProtocolGatewayService {
     };
   }
 
+  async generateIssueResolutionLoop(
+    ctx: ActionExecutionContext,
+    sessionId: string,
+    telegramUserId: string
+  ): Promise<IssueResolutionLoopView> {
+    return this.executeIdempotent(ctx, async () => {
+      const { session, participant } = await this.requireParticipantRecord(sessionId, telegramUserId);
+      const latestSynthesis = await this.synthesisReviewRepository.findLatestProblemSynthesis(sessionId);
+      if (!latestSynthesis) {
+        throw new IntakeValidationError('Issue loop requires synthesis first.');
+      }
+
+      const signals = await this.synthesisReviewRepository.listReviewSignals(
+        sessionId,
+        latestSynthesis.version
+      );
+      const participantSignals = new Set(signals.map((signal) => signal.participantId));
+      const everyParticipantReacted = session.participants.every((entry) =>
+        participantSignals.has(entry.id)
+      );
+      if (!everyParticipantReacted) {
+        throw new IntakeValidationError(
+          'Issue loop requires synthesis feedback from both participants.'
+        );
+      }
+
+      const partyA = session.participants.find((entry) => entry.role === 'PARTY_A');
+      const partyB = session.participants.find((entry) => entry.role === 'PARTY_B');
+      if (!partyA || !partyB) {
+        throw new IntakeValidationError('Issue loop requires two participants with explicit roles.');
+      }
+
+      const partyAData = await this.intakeService.getPrivateIntakeData(
+        sessionId,
+        partyA.telegramUserId
+      );
+      const partyBData = await this.intakeService.getPrivateIntakeData(
+        sessionId,
+        partyB.telegramUserId
+      );
+      if (partyAData.view.state !== 'COMPLETED' || partyBData.view.state !== 'COMPLETED') {
+        throw new IntakeValidationError('Issue loop requires completed structured intake for both sides.');
+      }
+
+      const generated = buildIssueResolutionLoop({
+        synthesisVersion: latestSynthesis.version,
+        primaryTensionPoint: latestSynthesis.divergence,
+        sharedGoal: latestSynthesis.focus,
+        sideA: {
+          interest: requireNormalized(
+            partyAData.view.fields.interests.normalizedValue,
+            'party_a.interests'
+          ),
+          constraint: requireNormalized(
+            partyAData.view.fields.constraints.normalizedValue,
+            'party_a.constraints'
+          ),
+          outcome: requireNormalized(
+            partyAData.view.fields.desired_outcome.normalizedValue,
+            'party_a.desired_outcome'
+          ),
+          flexibility: requireNormalized(
+            partyAData.view.fields.acceptable_concessions.normalizedValue,
+            'party_a.acceptable_flexibility'
+          )
+        },
+        sideB: {
+          interest: requireNormalized(
+            partyBData.view.fields.interests.normalizedValue,
+            'party_b.interests'
+          ),
+          constraint: requireNormalized(
+            partyBData.view.fields.constraints.normalizedValue,
+            'party_b.constraints'
+          ),
+          outcome: requireNormalized(
+            partyBData.view.fields.desired_outcome.normalizedValue,
+            'party_b.desired_outcome'
+          ),
+          flexibility: requireNormalized(
+            partyBData.view.fields.acceptable_concessions.normalizedValue,
+            'party_b.acceptable_flexibility'
+          )
+        }
+      });
+
+      const latestLoop = await this.issueResolutionRepository.findLatestLoopByCaseId(sessionId);
+      const loop: IssueResolutionLoop = {
+        id: this.idGenerator.nextId(),
+        caseId: sessionId,
+        version: latestLoop ? latestLoop.version + 1 : 1,
+        synthesisVersion: latestSynthesis.version,
+        issueTitle: generated.issue_title,
+        sideAPriority: generated.side_a_priority,
+        sideBPriority: generated.side_b_priority,
+        issueConstraints: generated.issue_constraints,
+        options: generated.options,
+        optionTradeoffs: generated.option_tradeoffs,
+        createdAt: this.clock.now()
+      };
+      await this.issueResolutionRepository.saveLoop(loop);
+
+      return {
+        loop_version: loop.version,
+        synthesis_version: loop.synthesisVersion,
+        issue_title: loop.issueTitle,
+        side_a_priority: loop.sideAPriority,
+        side_b_priority: loop.sideBPriority,
+        issue_constraints: loop.issueConstraints,
+        options: loop.options,
+        option_tradeoffs: loop.optionTradeoffs
+      };
+    });
+  }
+
+  async submitIssueOptionReaction(
+    ctx: ActionExecutionContext,
+    input: {
+      session_id: string;
+      telegram_user_id: string;
+      loop_version: number;
+      option_id: string;
+      reaction_type: IssueReactionType;
+      change_request?: string | null;
+    }
+  ): Promise<IssueResolutionSummaryView> {
+    return this.executeIdempotent(ctx, async () => {
+      const { session, participant } = await this.requireParticipantRecord(
+        input.session_id,
+        input.telegram_user_id
+      );
+      const loop = (await this.issueResolutionRepository.listLoopsByCaseId(input.session_id)).find(
+        (entry) => entry.version === input.loop_version
+      );
+      if (!loop) {
+        throw new IntakeValidationError('Issue loop was not found.');
+      }
+
+      const optionExists = loop.options.some((option) => option.option_id === input.option_id);
+      if (!optionExists) {
+        throw new IntakeValidationError('Issue option was not found.');
+      }
+
+      const changeRequest = input.change_request?.trim() ?? null;
+      if (input.reaction_type === IssueReactionTypes.REQUEST_CHANGE && !changeRequest) {
+        throw new IntakeValidationError('Change request cannot be empty.');
+      }
+
+      await this.issueResolutionRepository.saveOrUpdateReaction({
+        id: this.idGenerator.nextId(),
+        caseId: input.session_id,
+        loopVersion: input.loop_version,
+        participantId: participant.id,
+        optionId: input.option_id,
+        reactionType: input.reaction_type,
+        changeRequest: input.reaction_type === IssueReactionTypes.REQUEST_CHANGE ? changeRequest : null,
+        createdAt: this.clock.now()
+      });
+
+      return this.buildIssueSummary(session, loop);
+    });
+  }
+
+  async getIssueResolutionSummary(
+    sessionId: string,
+    telegramUserId: string
+  ): Promise<IssueResolutionSummaryView> {
+    const session = await this.requireParticipant(sessionId, telegramUserId);
+    const loop = await this.issueResolutionRepository.findLatestLoopByCaseId(sessionId);
+    if (!loop) {
+      throw new IntakeValidationError('Issue loop is not ready yet.');
+    }
+    return this.buildIssueSummary(session, loop);
+  }
+
   private async getProblemSynthesisReviewDetails(
     sessionId: string,
     telegramUserId: string
@@ -581,6 +811,52 @@ export class ProtocolGatewayService {
       review_summary: summary,
       confirm_count: confirmed,
       clarify_count: clarified
+    };
+  }
+
+  private async buildIssueSummary(
+    session: MediationSession,
+    loop: IssueResolutionLoop
+  ): Promise<IssueResolutionSummaryView> {
+    const reactions = await this.issueResolutionRepository.listReactions(loop.caseId, loop.version);
+    const metrics = loop.options.map((option) => {
+      const optionReactions = reactions.filter((entry) => entry.optionId === option.option_id);
+      return {
+        option_id: option.option_id,
+        accept_count: optionReactions.filter(
+          (entry) => entry.reactionType === IssueReactionTypes.ACCEPT
+        ).length,
+        reject_count: optionReactions.filter(
+          (entry) => entry.reactionType === IssueReactionTypes.REJECT
+        ).length,
+        change_request_count: optionReactions.filter(
+          (entry) => entry.reactionType === IssueReactionTypes.REQUEST_CHANGE
+        ).length
+      };
+    });
+
+    let status: (typeof IssueLoopStatuses)[keyof typeof IssueLoopStatuses] =
+      IssueLoopStatuses.IN_PROGRESS;
+    let workableOptionId: string | null = null;
+    for (const metric of metrics) {
+      if (metric.accept_count >= 2) {
+        status = IssueLoopStatuses.WORKABLE_PATH_FOUND;
+        workableOptionId = metric.option_id;
+        break;
+      }
+    }
+    if (
+      status === IssueLoopStatuses.IN_PROGRESS &&
+      metrics.every((metric) => metric.reject_count >= 2)
+    ) {
+      status = IssueLoopStatuses.NO_WORKABLE_PATH;
+    }
+
+    return {
+      loop_version: loop.version,
+      status,
+      workable_option_id: workableOptionId,
+      option_reactions: metrics
     };
   }
 
@@ -1050,5 +1326,72 @@ const buildStructuredProblemSynthesis = (
     side_a_constraint: sideAConstraint,
     side_b_constraint: sideBConstraint,
     possible_zone_of_agreement: zoneSummary
+  };
+};
+
+type IssueLoopInput = {
+  synthesisVersion: number;
+  primaryTensionPoint: string;
+  sharedGoal: string;
+  sideA: {
+    interest: string;
+    constraint: string;
+    outcome: string;
+    flexibility: string;
+  };
+  sideB: {
+    interest: string;
+    constraint: string;
+    outcome: string;
+    flexibility: string;
+  };
+};
+
+const buildIssueResolutionLoop = (input: IssueLoopInput) => {
+  const issueThemes = unique(
+    extractSynthesisThemes(
+      `${input.primaryTensionPoint} ${input.sideA.outcome} ${input.sideB.outcome}`
+    )
+  );
+  const leadTheme = issueThemes[0] ?? 'условия взаимодействия и итоговые договорённости';
+  const supportTheme = issueThemes[1] ?? leadTheme;
+
+  const issueTitle = `Согласование по теме: ${leadTheme}`;
+  const sideAPriority = `Для одной стороны важно: ${input.sideA.interest}.`;
+  const sideBPriority = `Для другой стороны важно: ${input.sideB.interest}.`;
+  const issueConstraints = [
+    `Ограничение стороны A: ${input.sideA.constraint}.`,
+    `Ограничение стороны B: ${input.sideB.constraint}.`
+  ];
+
+  const option1: IssueResolutionOption = {
+    option_id: 'OPTION_1',
+    title: `Базовый план по теме «${leadTheme}»`,
+    description: `Зафиксировать базовые правила и окно корректировок заранее, чтобы сохранить предсказуемость для обеих сторон.`,
+    tradeoff_note: 'Нужно дисциплинированно подтверждать изменения заранее.'
+  };
+  const option2: IssueResolutionOption = {
+    option_id: 'OPTION_2',
+    title: `Приоритет стороны A с защитой по теме «${supportTheme}»`,
+    description: `Сначала закрепить ключевой приоритет стороны A, но добавить обязательную защиту ограничений стороны B.`,
+    tradeoff_note: 'Стороне B придётся принять смещение в порядке этапов.'
+  };
+  const option3: IssueResolutionOption = {
+    option_id: 'OPTION_3',
+    title: `Приоритет стороны B с защитой по теме «${supportTheme}»`,
+    description: `Сначала закрепить ключевой приоритет стороны B, но добавить обязательную защиту ограничений стороны A.`,
+    tradeoff_note: 'Стороне A придётся принять смещение в порядке этапов.'
+  };
+
+  return {
+    issue_title: issueTitle,
+    side_a_priority: sideAPriority,
+    side_b_priority: sideBPriority,
+    issue_constraints: issueConstraints,
+    options: [option1, option2, option3],
+    option_tradeoffs: [option1.tradeoff_note, option2.tradeoff_note, option3.tradeoff_note],
+    synthesis_version: input.synthesisVersion,
+    primary_tension_point: input.primaryTensionPoint,
+    shared_goal: input.sharedGoal
   };
 };

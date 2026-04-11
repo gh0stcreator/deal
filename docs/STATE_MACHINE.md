@@ -80,17 +80,32 @@ Legacy reserved enum values still present for compatibility:
 - input boundary: confirmed normalized intake fields only
 - output: structured neutral synthesis object (`shared_goal`, `agreement_points`, `tension_points`, `primary_tension_point`, side interests/constraints, `possible_zone_of_agreement`)
 
-10. `generate_proposals`
+10. `generate_issue_loop`
+- from: post-synthesis review (both participants submitted `confirm` or `clarify`)
+- to: stays in issue-resolution subflow for one primary tension point
+- guard: two participants + completed structured intake + latest synthesis exists + both participants reacted to synthesis
+- output: deterministic issue loop (`issue_title`, side priorities, constraints, 3 options, tradeoffs)
+
+11. `submit_issue_option_reaction`
+- from: issue-resolution subflow
+- allowed reactions: `ACCEPT`, `REJECT`, `REQUEST_CHANGE`
+- `REQUEST_CHANGE` stores private correction text; not shown raw to other side
+- summary status:
+  - `IN_PROGRESS`
+  - `WORKABLE_PATH_FOUND` (both accepted same option)
+  - `NO_WORKABLE_PATH` (both rejected all options)
+
+12. `generate_proposals`
 - from: `READY_FOR_PROPOSAL`
 - to: `PROPOSALS_GENERATED`
 - writes versioned `ProposalSet`
 
-11. `submit_negotiation_actions`
+13. `submit_negotiation_actions`
 - from: `PROPOSALS_GENERATED` or `NEGOTIATION_IN_PROGRESS`
 - to: `NEGOTIATION_IN_PROGRESS` or terminal states
 - allowed actions only: `ACCEPT`, `REJECT`, `SELECT_PREFERRED`, `SUGGEST_EDIT`
 
-12. terminal outcomes
+14. terminal outcomes
 - `AGREEMENT_REACHED`: both accept same variant
 - `PARTIAL_AGREEMENT`: subset convergence with unresolved clauses
 - `DEADLOCK`: full rejection or repeated conflicting edit rounds

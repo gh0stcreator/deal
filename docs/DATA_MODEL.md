@@ -104,6 +104,31 @@ Structured synthesis payload (application-level shape):
 - `createdAt`
 - unique (`caseId`, `participantId`, `synthesisVersion`)
 
+## Issue resolution entities (Phase 3)
+### `IssueResolutionLoop`
+- `id`
+- `caseId`
+- `version` (unique per case)
+- `synthesisVersion`
+- `issueTitle`
+- `sideAPriority`
+- `sideBPriority`
+- `issueConstraintsJson`
+- `optionsJson`
+- `optionTradeoffsJson`
+- `createdAt`
+
+### `IssueResolutionReaction`
+- `id`
+- `caseId`
+- `loopVersion`
+- `participantId`
+- `optionId`
+- `reactionType` (`ACCEPT`, `REJECT`, `REQUEST_CHANGE`)
+- `changeRequest` (nullable; private participant note)
+- `createdAt`
+- unique (`caseId`, `loopVersion`, `participantId`, `optionId`)
+
 ## Proposal/negotiation entities
 ### `ProposalSet`
 - `id`
@@ -162,6 +187,8 @@ Structured synthesis payload (application-level shape):
 
 ## Enforced boundaries
 - Synthesis consumes confirmed normalized intake models only.
+- Issue-resolution loop consumes confirmed structured intake + latest reviewed synthesis only.
+- Issue change requests stay private and are not exposed as raw text in shared summaries.
 - Proposal generation consumes `MediationSummary` only.
 - Negotiation consumes proposal-layer entities only.
 - Transport views do not expose private raw intake artifacts.

@@ -10,7 +10,7 @@ Help two participants resolve conflict through private structured intake, neutra
 - State machine driven progression.
 - Deterministic control flow; LLM usage limited to mapping/normalization tasks.
 
-## Implemented now (through Phase 6)
+## Implemented now (through Phase 3 issue-resolution loop)
 - Session/invite/join flow.
 - Dual explicit consent.
 - Resumable private intake with mandatory summary confirmation.
@@ -32,6 +32,11 @@ Help two participants resolve conflict through private structured intake, neutra
   - private clarification capture (`Нет, нужно уточнить`) without auto re-synthesis
   - persisted synthesis review signals (`CONFIRM` / `CLARIFY`) for dogfood validation
   - debug synthesis review summary (`both_confirmed`, `one_confirmed_one_clarified`, `both_clarified`)
+- Focused issue-resolution loop on primary tension point:
+  - deterministic generation of exactly 3 neutral options from confirmed intake + confirmed synthesis
+  - per-participant option reactions (`Подходит`, `Не подходит`, `Хочу изменить`)
+  - private change requests per participant without cross-party raw leakage
+  - loop summary status (`IN_PROGRESS`, `WORKABLE_PATH_FOUND`, `NO_WORKABLE_PATH`)
 
 ## Phase 2 synthesis shape (implemented)
 - shared_goal
@@ -43,6 +48,18 @@ Help two participants resolve conflict through private structured intake, neutra
 - side_a_constraint
 - side_b_constraint
 - possible_zone_of_agreement
+
+## Phase 3 issue loop shape (implemented)
+- issue_title
+- side_a_priority
+- side_b_priority
+- issue_constraints
+- options[3]:
+  - option_id
+  - title
+  - description
+  - tradeoff_note
+- option_tradeoffs
 
 ## Intake UX (current guided flow)
 - Private intake is collected one focused question at a time.
