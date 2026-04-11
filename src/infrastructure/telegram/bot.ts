@@ -364,6 +364,7 @@ export const buildTelegramBot = (
       '— чего ты хочешь дальше',
       '',
       'Дальше я сам соберу общую картину.',
+      'Это станет основой, от которой мы будем двигаться дальше.',
       '',
       'В чём сейчас основная проблема?'
     ].join('\n');
@@ -639,20 +640,23 @@ export const buildTelegramBot = (
         .row()
         .text('Посмотреть статус', `status:${result.session_id}`);
 
-      const text = [
-        'Договорённость создана.',
-        '',
+      const instructionText = ['Готово.', '', 'Отправь следующее сообщение второму человеку 👇'].join('\n');
+      const inviteText = [
         `${initiatorName} хочет обсудить с вами:`,
         `«${problemTopic}»`,
         '',
-        'Перешли это сообщение второму человеку 👇',
-        '',
+        'Нажмите на ссылку, чтобы подключиться:',
         deepLink ?? 'Не получилось создать ссылку в этом чате.'
       ].join('\n');
 
       await sendReplyWithRetry(
         ctx,
-        text,
+        instructionText,
+        { correlation_id: correlationId, action_type: 'create_session_instruction' }
+      );
+      await sendReplyWithRetry(
+        ctx,
+        inviteText,
         { correlation_id: correlationId, action_type: 'create_session' },
         { reply_markup: keyboard }
       );

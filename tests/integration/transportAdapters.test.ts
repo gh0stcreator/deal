@@ -510,11 +510,13 @@ describe('transport adapters', () => {
     expect(replies[replies.length - 1]).toContain('Я отправлю это второму человеку как тему договорённости:');
     expect(replies[replies.length - 1]).toContain('Отправляем?');
     await sendTelegramCallback(bot, 63, 101, 'create_topic:confirm_final');
+    const instructionReply = replies[replies.length - 2];
+    expect(instructionReply).toContain('Готово.');
+    expect(instructionReply).toContain('Отправь следующее сообщение второму человеку');
     const creatorReply = replies[replies.length - 1];
-    expect(creatorReply).toContain('Договорённость создана');
-    expect(creatorReply).toContain('Перешли это сообщение второму человеку');
     expect(creatorReply).toContain('user хочет обсудить с вами:');
     expect(creatorReply).toContain('«Сроки и оплата за проект»');
+    expect(creatorReply).toContain('Нажмите на ссылку, чтобы подключиться:');
     expect(creatorReply).toContain('https://t.me/ladno_bot?start=join_');
     const creatorActionsBeforeJoin = JSON.stringify(sentPayloads[sentPayloads.length - 1].reply_markup);
     expect(creatorActionsBeforeJoin).toContain('invite:details');
@@ -719,7 +721,8 @@ describe('transport adapters', () => {
     expect(setup.replies[setup.replies.length - 1]).toContain('Что-то пошло не так. Попробуй ещё раз.');
 
     await sendTelegramCallback(setup.bot, 84, 101, 'create_topic:confirm_final');
-    expect(setup.replies[setup.replies.length - 1]).toContain('Договорённость создана.');
+    expect(setup.replies[setup.replies.length - 2]).toContain('Готово.');
+    expect(setup.replies[setup.replies.length - 1]).toContain('хочет обсудить с вами:');
   });
 
   it('deduplicates repeated Telegram delivery by update_id idempotency key', async () => {
