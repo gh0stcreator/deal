@@ -162,6 +162,21 @@ Structured synthesis payload (application-level shape):
 - `createdAt`
 - unique (`caseId`, `draftVersion`)
 
+## Dogfood quality entities (Phase 5)
+### `SessionEvaluation`
+- `caseId` (PK, FK -> `MediationSession.id`)
+- `synthesisConfirmed` (both participants confirmed synthesis)
+- `synthesisClarified` (at least one clarification on synthesis)
+- `optionAcceptRate` (accept / (accept + reject))
+- `agreementReached`
+- `agreementAfterEdit`
+- `deadlock`
+- `qualityFlagsJson` (`low_recognition`, `over_generalization`, `full_option_rejection`, `repeated_edits_without_convergence`)
+- `createdAt`
+- `updatedAt`
+
+`SessionEvaluation` is derived/observable metadata for dogfood analysis. It does not alter protocol state.
+
 ## Proposal/negotiation entities
 ### `ProposalSet`
 - `id`
@@ -224,6 +239,7 @@ Structured synthesis payload (application-level shape):
 - Issue change requests stay private and are not exposed as raw text in shared summaries.
 - Draft agreements are generated only from converged issue-loop signals and confirmed intake constraints/outcomes.
 - Draft change requests are private and not surfaced as cross-party raw text.
+- Session full-export returns only structured fields for each side and hides raw private text artifacts.
 - Proposal generation consumes `MediationSummary` only.
 - Negotiation consumes proposal-layer entities only.
 - Transport views do not expose private raw intake artifacts.

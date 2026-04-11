@@ -1,10 +1,8 @@
-# Synthesis Dogfood Runbook (5–10 Sessions)
+# Mediation Dogfood Runbook (5–10 Sessions)
 
 ## Scope
-Run only the minimal flow:
-`create -> join -> consent -> problem statement confirm -> shared synthesis -> review reaction`
-
-No proposal generation in this pass.
+Run full currently implemented flow:
+`create -> join -> consent -> structured intake -> shared synthesis -> issue loop -> draft agreement/outcome`
 
 ## 1) Start a fresh session
 1. In Telegram account A: `/start` -> `Создать договорённость`.
@@ -15,6 +13,7 @@ No proposal generation in this pass.
 6. Each account reacts to synthesis:
    - `Это похоже на правду` or
    - `Нет, нужно уточнить` (+ clarification text).
+7. Continue issue loop and agreement draft until one outcome is visible (`agreement`/`partial_agreement`/`deadlock`) or participant drops.
 
 ## 2) Capture `session_id`
 - Fast way via HTTP create response:
@@ -24,40 +23,62 @@ No proposal generation in this pass.
   - `GET /sessions/<session_id>/status?telegramUserId=<id>`
 - During dogfood, keep a simple table: `session_id`, date, participants.
 
-## 3) Inspect synthesis review summary
+## 3) Inspect per-session full export
 For each finished session:
 
-`GET /sessions/<session_id>/synthesis/review/export?telegramUserId=<participant_telegram_id>`
+`GET /sessions/<session_id>/full-export?telegramUserId=<participant_telegram_id>`
 
-Returns:
-- `session_id`
-- `synthesis_version`
-- `review_summary` (`both_confirmed`, `one_confirmed_one_clarified`, `both_clarified`, `incomplete`)
-- `confirm_count`
-- `clarify_count`
+Check:
+- `synthesis.review_summary`
+- `issue_loop.reactions`
+- `draft_agreement.final_outcome`
+- `evaluation`:
+  - `synthesis_confirmed`
+  - `synthesis_clarified`
+  - `option_accept_rate`
+  - `agreement_reached`
+  - `agreement_after_edit`
+  - `deadlock`
+  - `quality_flags`
 
 ## 4) Detect clarify-heavy sessions
 Flag session as clarify-heavy if:
 - `clarify_count >= 1` for pilot scale, or
 - `review_summary != both_confirmed`.
 
-## 5) Signals to watch in first 5–10 sessions
+## 5) Aggregate report for 5–10 sessions
+`GET /dogfood/report`
+
+Track:
+1. `% both_confirmed synthesis`
+2. `% workable_path_found`
+3. `% agreement`
+4. `% deadlock`
+5. `top_failure_patterns`
+
+## 6) Signals to watch in first 5–10 sessions
 Track these exact metrics:
-1. `both_confirmed` rate.
-2. `one_confirmed_one_clarified` count.
-3. `both_clarified` count.
-4. Clarification text themes:
+1. `both_confirmed` synthesis rate.
+2. workable option acceptance trend (`option_accept_rate` by session).
+3. agreement vs deadlock split.
+4. Clarification themes:
    - “не узнал себя”
    - “слишком обобщено”
    - “искажён акцент”
    - any hint of private wording leakage.
-5. Sessions with repeated clarify reactions after resend.
+5. sessions with `quality_flags`:
+   - `low_recognition`
+   - `over_generalization`
+   - `full_option_rejection`
+   - `repeated_edits_without_convergence`
 
-## 6) Minimal go/no-go heuristic before proposals
+## 7) Minimal go/no-go heuristic before broader rollout
 - Go to next stage only if:
   - `both_confirmed` >= 70% of sessions,
   - no confirmed privacy leakage cases,
-  - clarify reasons are mostly “detail gap” (not “misrepresentation”).
+  - option rejection is not dominant,
+  - clarifications are mostly “detail gap” (not “misrepresentation”).
 - Hold if:
   - `both_clarified` appears repeatedly,
+  - `full_option_rejection` dominates,
   - clarifications indicate trust/recognition issues.

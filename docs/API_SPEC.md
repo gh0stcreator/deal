@@ -60,6 +60,28 @@ Base URL: `http://localhost:3000`
 }
 ```
 
+### `GET /sessions/:sessionId/full-export?telegramUserId=...`
+- session-level debug export of structured pipeline artifacts:
+  - structured intake (both participants, normalized only)
+  - synthesis summary + reactions
+  - issue loop options + reactions
+  - draft agreement + final outcome
+  - persisted evaluation markers and quality flags
+- note: raw private messages and raw private change requests are not returned.
+
+### `GET /dogfood/report`
+- aggregate report across persisted session evaluations:
+```json
+{
+  "sessions_count": 10,
+  "synthesis_both_confirmed_pct": 70,
+  "workable_path_found_pct": 60,
+  "agreement_pct": 40,
+  "deadlock_pct": 20,
+  "top_failure_patterns": [{ "pattern": "full_option_rejection", "count": 3 }]
+}
+```
+
 ## Proposal
 ### `POST /sessions/:sessionId/proposals/generate`
 - body: `{ "telegramUserId": "string" }`

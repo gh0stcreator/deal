@@ -12,6 +12,7 @@ import { ProtocolTrackingRepository } from '../ports/ProtocolTrackingRepository.
 import { SynthesisReviewRepository } from '../ports/SynthesisReviewRepository.js';
 import { IssueResolutionRepository } from '../ports/IssueResolutionRepository.js';
 import { DraftAgreementRepository } from '../ports/DraftAgreementRepository.js';
+import { SessionEvaluationRepository } from '../ports/SessionEvaluationRepository.js';
 import {
   IdempotencyRecord,
   ProtocolEventOutcomes,
@@ -49,6 +50,7 @@ import {
   DraftAgreementResponseType,
   DraftAgreementResponseTypes
 } from '../../domain/agreement/types.js';
+import { SessionEvaluation } from '../../domain/quality/types.js';
 
 const RETRY_WINDOW_MS = 20_000;
 
@@ -176,6 +178,74 @@ export interface DraftAgreementDecisionView {
   change_request_count: number;
 }
 
+export interface SessionEvaluationView {
+  synthesis_confirmed: boolean;
+  synthesis_clarified: boolean;
+  option_accept_rate: number;
+  agreement_reached: boolean;
+  agreement_after_edit: boolean;
+  deadlock: boolean;
+  quality_flags: string[];
+}
+
+export interface SessionFullExportView {
+  session_id: string;
+  state: SessionState;
+  intake: {
+    party_a: {
+      state: string;
+      normalized_fields: Record<string, string | null>;
+      completed_at: Date | null;
+    } | null;
+    party_b: {
+      state: string;
+      normalized_fields: Record<string, string | null>;
+      completed_at: Date | null;
+    } | null;
+  };
+  synthesis: {
+    version: number | null;
+    shared_goal: string | null;
+    agreement_points: string[];
+    primary_tension_point: string | null;
+    review_summary: ProblemSynthesisReviewSummary['review_summary'];
+    confirm_count: number;
+    clarify_count: number;
+  };
+  issue_loop: {
+    version: number | null;
+    status: string | null;
+    issue_title: string | null;
+    options: Array<{ option_id: string; title: string; tradeoff_note: string }>;
+    reactions: Array<{
+      participant_role: string;
+      option_id: string;
+      reaction_type: IssueReactionType;
+      has_change_request: boolean;
+    }>;
+  };
+  draft_agreement: {
+    version: number | null;
+    structure: DraftAgreementView | null;
+    responses: Array<{
+      participant_role: string;
+      response_type: DraftAgreementResponseType;
+      has_change_request: boolean;
+    }>;
+    final_outcome: DraftAgreementOutcomeType | null;
+  };
+  evaluation: SessionEvaluationView;
+}
+
+export interface DogfoodReportView {
+  sessions_count: number;
+  synthesis_both_confirmed_pct: number;
+  workable_path_found_pct: number;
+  agreement_pct: number;
+  deadlock_pct: number;
+  top_failure_patterns: Array<{ pattern: string; count: number }>;
+}
+
 export interface StructuredIntakeAnswerInput {
   field: IntakeField;
   value: string;
@@ -237,6 +307,18 @@ class NoopDraftAgreementRepository implements DraftAgreementRepository {
   }
 }
 
+class NoopSessionEvaluationRepository implements SessionEvaluationRepository {
+  async findByCaseId(): Promise<SessionEvaluation | null> {
+    return null;
+  }
+
+  async upsert(): Promise<void> {}
+
+  async listAll(): Promise<SessionEvaluation[]> {
+    return [];
+  }
+}
+
 export class ProtocolGatewayService {
   /**
    * Phase-specific alias:
@@ -259,7 +341,8 @@ export class ProtocolGatewayService {
     private readonly logger: AppLogger = createNoopLogger(),
     private readonly synthesisReviewRepository: SynthesisReviewRepository = new NoopSynthesisReviewRepository(),
     private readonly issueResolutionRepository: IssueResolutionRepository = new NoopIssueResolutionRepository(),
-    private readonly draftAgreementRepository: DraftAgreementRepository = new NoopDraftAgreementRepository()
+    private readonly draftAgreementRepository: DraftAgreementRepository = new NoopDraftAgreementRepository(),
+    private readonly sessionEvaluationRepository: SessionEvaluationRepository = new NoopSessionEvaluationRepository()
   ) {}
 
   async createSession(
@@ -1064,6 +1147,165 @@ export class ProtocolGatewayService {
     return this.buildDraftAgreementDecisionSummary(sessionId, draftVersion);
   }
 
+  async getSessionFullExport(
+    sessionId: string,
+    telegramUserId: string
+  ): Promise<SessionFullExportView> {
+    const session = await this.requireParticipant(sessionId, telegramUserId);
+
+    const roleByParticipantId = new Map(session.participants.map((entry) => [entry.id, entry.role]));
+    const partyA = session.participants.find((entry) => entry.role === 'PARTY_A');
+    const partyB = session.participants.find((entry) => entry.role === 'PARTY_B');
+
+    const mapIntakeForRole = async (telegramId: string | undefined) => {
+      if (!telegramId) {
+        return null;
+      }
+      try {
+        const privateData = await this.intakeService.getPrivateIntakeData(sessionId, telegramId);
+        return {
+          state: privateData.view.state,
+          normalized_fields: Object.fromEntries(
+            Object.entries(privateData.view.fields).map(([field, value]) => [field, value.normalizedValue])
+          ),
+          completed_at: privateData.view.completedAt
+        };
+      } catch (error) {
+        if (!(error instanceof DomainError) || error.code !== 'INTAKE_NOT_FOUND') {
+          throw error;
+        }
+        return null;
+      }
+    };
+
+    const partyAIntake = await mapIntakeForRole(partyA?.telegramUserId);
+    const partyBIntake = await mapIntakeForRole(partyB?.telegramUserId);
+
+    const synthesisSnapshot = await this.synthesisReviewRepository.findLatestProblemSynthesis(sessionId);
+    let synthesisSignals = [] as Array<{ participantId: string; reactionType: SynthesisReactionType }>;
+    if (synthesisSnapshot) {
+      synthesisSignals = await this.synthesisReviewRepository.listReviewSignals(
+        sessionId,
+        synthesisSnapshot.version
+      );
+    }
+    const synthesisConfirmCount = synthesisSignals.filter(
+      (entry) => entry.reactionType === SynthesisReactionTypes.CONFIRM
+    ).length;
+    const synthesisClarifyCount = synthesisSignals.filter(
+      (entry) => entry.reactionType === SynthesisReactionTypes.CLARIFY
+    ).length;
+
+    const reviewSummary = synthesisSnapshot
+      ? await this.getProblemSynthesisReviewSummary(sessionId, telegramUserId)
+      : { synthesis_version: null, review_summary: 'incomplete' as const };
+
+    const latestLoop = await this.issueResolutionRepository.findLatestLoopByCaseId(sessionId);
+    const issueSummary = latestLoop
+      ? await this.buildIssueSummary(session, latestLoop)
+      : null;
+    const loopReactions = latestLoop
+      ? await this.issueResolutionRepository.listReactions(sessionId, latestLoop.version)
+      : [];
+
+    const latestDraft = await this.draftAgreementRepository.findLatestByCaseId(sessionId);
+    const draftResponses = latestDraft
+      ? await this.draftAgreementRepository.listResponses(sessionId, latestDraft.version)
+      : [];
+    const draftOutcome = latestDraft
+      ? await this.draftAgreementRepository.findOutcome(sessionId, latestDraft.version)
+      : null;
+
+    const evaluation = await this.refreshSessionEvaluation(session);
+
+    return {
+      session_id: session.id,
+      state: session.state,
+      intake: {
+        party_a: partyAIntake,
+        party_b: partyBIntake
+      },
+      synthesis: {
+        version: synthesisSnapshot?.version ?? null,
+        shared_goal: synthesisSnapshot?.focus ?? null,
+        agreement_points: synthesisSnapshot?.sharedPoints
+          ? synthesisSnapshot.sharedPoints.split('|').map((entry) => entry.trim()).filter(Boolean)
+          : [],
+        primary_tension_point: synthesisSnapshot?.divergence ?? null,
+        review_summary: reviewSummary.review_summary,
+        confirm_count: synthesisConfirmCount,
+        clarify_count: synthesisClarifyCount
+      },
+      issue_loop: {
+        version: latestLoop?.version ?? null,
+        status: issueSummary?.status ?? null,
+        issue_title: latestLoop?.issueTitle ?? null,
+        options:
+          latestLoop?.options.map((entry) => ({
+            option_id: entry.option_id,
+            title: entry.title,
+            tradeoff_note: entry.tradeoff_note
+          })) ?? [],
+        reactions: loopReactions.map((entry) => ({
+          participant_role: roleByParticipantId.get(entry.participantId) ?? 'UNKNOWN',
+          option_id: entry.optionId,
+          reaction_type: entry.reactionType,
+          has_change_request: Boolean(entry.changeRequest)
+        }))
+      },
+      draft_agreement: {
+        version: latestDraft?.version ?? null,
+        structure: latestDraft ? mapDraftAgreement(latestDraft) : null,
+        responses: draftResponses.map((entry) => ({
+          participant_role: roleByParticipantId.get(entry.participantId) ?? 'UNKNOWN',
+          response_type: entry.responseType,
+          has_change_request: Boolean(entry.changeRequest)
+        })),
+        final_outcome: draftOutcome?.outcome ?? null
+      },
+      evaluation: mapSessionEvaluationView(evaluation)
+    };
+  }
+
+  async getDogfoodReport(): Promise<DogfoodReportView> {
+    const records = await this.sessionEvaluationRepository.listAll();
+    const sessionsCount = records.length;
+    if (sessionsCount === 0) {
+      return {
+        sessions_count: 0,
+        synthesis_both_confirmed_pct: 0,
+        workable_path_found_pct: 0,
+        agreement_pct: 0,
+        deadlock_pct: 0,
+        top_failure_patterns: []
+      };
+    }
+
+    const patternCounts = new Map<string, number>();
+    for (const record of records) {
+      for (const flag of record.qualityFlags) {
+        patternCounts.set(flag, (patternCounts.get(flag) ?? 0) + 1);
+      }
+    }
+
+    const synthConfirmed = records.filter((entry) => entry.synthesisConfirmed).length;
+    const workablePath = records.filter((entry) => entry.optionAcceptRate > 0).length;
+    const agreement = records.filter((entry) => entry.agreementReached).length;
+    const deadlock = records.filter((entry) => entry.deadlock).length;
+
+    return {
+      sessions_count: sessionsCount,
+      synthesis_both_confirmed_pct: roundPct((synthConfirmed / sessionsCount) * 100),
+      workable_path_found_pct: roundPct((workablePath / sessionsCount) * 100),
+      agreement_pct: roundPct((agreement / sessionsCount) * 100),
+      deadlock_pct: roundPct((deadlock / sessionsCount) * 100),
+      top_failure_patterns: Array.from(patternCounts.entries())
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5)
+        .map(([pattern, count]) => ({ pattern, count }))
+    };
+  }
+
   private async buildDraftAgreementDecisionSummary(
     sessionId: string,
     draftVersion: number
@@ -1095,6 +1337,82 @@ export class ProtocolGatewayService {
       reject_count: rejectCount,
       change_request_count: changeCount
     };
+  }
+
+  private async refreshSessionEvaluation(session: MediationSession): Promise<SessionEvaluation> {
+    const synthesisSnapshot = await this.synthesisReviewRepository.findLatestProblemSynthesis(session.id);
+    const synthesisSignals = synthesisSnapshot
+      ? await this.synthesisReviewRepository.listReviewSignals(session.id, synthesisSnapshot.version)
+      : [];
+    const synthesisConfirmed =
+      session.participants.length === 2 &&
+      session.participants.every((participant) =>
+        synthesisSignals.some(
+          (signal) =>
+            signal.participantId === participant.id &&
+            signal.reactionType === SynthesisReactionTypes.CONFIRM
+        )
+      );
+    const synthesisClarified = synthesisSignals.some(
+      (signal) => signal.reactionType === SynthesisReactionTypes.CLARIFY
+    );
+
+    const loop = await this.issueResolutionRepository.findLatestLoopByCaseId(session.id);
+    const issueReactions = loop
+      ? await this.issueResolutionRepository.listReactions(session.id, loop.version)
+      : [];
+    const accepts = issueReactions.filter((entry) => entry.reactionType === IssueReactionTypes.ACCEPT).length;
+    const rejects = issueReactions.filter((entry) => entry.reactionType === IssueReactionTypes.REJECT).length;
+    const optionAcceptRate = accepts + rejects > 0 ? accepts / (accepts + rejects) : 0;
+
+    const latestDraft = await this.draftAgreementRepository.findLatestByCaseId(session.id);
+    const latestOutcome = latestDraft
+      ? await this.draftAgreementRepository.findOutcome(session.id, latestDraft.version)
+      : null;
+    const agreementReached = latestOutcome?.outcome === DraftAgreementOutcomeTypes.AGREEMENT;
+    const deadlock = latestOutcome?.outcome === DraftAgreementOutcomeTypes.DEADLOCK;
+    const agreementAfterEdit =
+      agreementReached &&
+      issueReactions.some((entry) => entry.reactionType === IssueReactionTypes.REQUEST_CHANGE);
+
+    const qualityFlags: string[] = [];
+    if (synthesisSignals.length > 0 && synthesisClarified && !synthesisConfirmed) {
+      qualityFlags.push('low_recognition');
+    }
+    if (
+      synthesisSnapshot &&
+      [synthesisSnapshot.focus, synthesisSnapshot.sharedPoints, synthesisSnapshot.divergence].some(
+        (entry) => entry.trim().length < 20
+      )
+    ) {
+      qualityFlags.push('over_generalization');
+    }
+    if (loop && rejects > 0 && accepts === 0) {
+      qualityFlags.push('full_option_rejection');
+    }
+    const editCount = issueReactions.filter(
+      (entry) => entry.reactionType === IssueReactionTypes.REQUEST_CHANGE
+    ).length;
+    if (editCount >= 4 && !agreementReached) {
+      qualityFlags.push('repeated_edits_without_convergence');
+    }
+
+    const now = this.clock.now();
+    const existing = await this.sessionEvaluationRepository.findByCaseId(session.id);
+    const evaluation: SessionEvaluation = {
+      caseId: session.id,
+      synthesisConfirmed,
+      synthesisClarified,
+      optionAcceptRate: Number(optionAcceptRate.toFixed(4)),
+      agreementReached,
+      agreementAfterEdit,
+      deadlock,
+      qualityFlags: unique(qualityFlags),
+      updatedAt: now,
+      createdAt: existing?.createdAt ?? now
+    };
+    await this.sessionEvaluationRepository.upsert(evaluation);
+    return evaluation;
   }
 
   private async getProblemSynthesisReviewDetails(
@@ -1854,3 +2172,15 @@ const mapDraftAgreement = (draft: DraftAgreement): DraftAgreementView => ({
   fallback_rule: draft.fallbackRule,
   review_point: draft.reviewPoint
 });
+
+const mapSessionEvaluationView = (evaluation: SessionEvaluation): SessionEvaluationView => ({
+  synthesis_confirmed: evaluation.synthesisConfirmed,
+  synthesis_clarified: evaluation.synthesisClarified,
+  option_accept_rate: evaluation.optionAcceptRate,
+  agreement_reached: evaluation.agreementReached,
+  agreement_after_edit: evaluation.agreementAfterEdit,
+  deadlock: evaluation.deadlock,
+  quality_flags: evaluation.qualityFlags
+});
+
+const roundPct = (value: number): number => Number(value.toFixed(2));

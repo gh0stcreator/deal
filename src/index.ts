@@ -23,6 +23,7 @@ import { PrismaProtocolTrackingRepository } from './infrastructure/repositories/
 import { PrismaSynthesisReviewRepository } from './infrastructure/repositories/PrismaSynthesisReviewRepository.js';
 import { PrismaIssueResolutionRepository } from './infrastructure/repositories/PrismaIssueResolutionRepository.js';
 import { PrismaDraftAgreementRepository } from './infrastructure/repositories/PrismaDraftAgreementRepository.js';
+import { PrismaSessionEvaluationRepository } from './infrastructure/repositories/PrismaSessionEvaluationRepository.js';
 import { buildTelegramBot } from './infrastructure/telegram/bot.js';
 
 const bootstrap = async () => {
@@ -41,6 +42,7 @@ const bootstrap = async () => {
   const synthesisReviewRepository = new PrismaSynthesisReviewRepository(prisma);
   const issueResolutionRepository = new PrismaIssueResolutionRepository(prisma);
   const draftAgreementRepository = new PrismaDraftAgreementRepository(prisma);
+  const sessionEvaluationRepository = new PrismaSessionEvaluationRepository(prisma);
 
   const mediationService = new MediationService(sessionRepository, clock, ids);
   const intakeService = new IntakeService(
@@ -88,7 +90,8 @@ const bootstrap = async () => {
     logger,
     synthesisReviewRepository,
     issueResolutionRepository,
-    draftAgreementRepository
+    draftAgreementRepository,
+    sessionEvaluationRepository
   );
 
   const app = buildHttpServer(gateway, {

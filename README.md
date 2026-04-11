@@ -26,6 +26,10 @@ Telegram-first backend for deterministic two-party mediation.
   - structured protocol and transport logging without private raw text
 - Concurrency and replay-focused integration tests.
 - Real Postgres integration suite (enabled when `TEST_DATABASE_URL` is set).
+- Dogfood validation observability:
+  - `GET /sessions/:sessionId/full-export?telegramUserId=...`
+  - `GET /dogfood/report`
+  - persisted `SessionEvaluation` markers + quality flags.
 
 ## Local setup
 1. Copy env:

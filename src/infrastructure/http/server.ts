@@ -602,6 +602,26 @@ export const buildHttpServer = (gateway: ProtocolGatewayService, options: HttpSe
     }
   });
 
+  app.get('/sessions/:sessionId/full-export', async (request, reply) => {
+    try {
+      const params = z.object({ sessionId: z.string().min(1) }).parse(request.params);
+      const query = z.object({ telegramUserId: z.string().min(1) }).parse(request.query);
+      const exported = await gateway.getSessionFullExport(params.sessionId, query.telegramUserId);
+      return reply.send(exported);
+    } catch (error) {
+      return sendHttpError(error, reply);
+    }
+  });
+
+  app.get('/dogfood/report', async (_request, reply) => {
+    try {
+      const report = await gateway.getDogfoodReport();
+      return reply.send(report);
+    } catch (error) {
+      return sendHttpError(error, reply);
+    }
+  });
+
   app.get('/sessions/:sessionId/proposals', async (request, reply) => {
     try {
       const params = z.object({ sessionId: z.string().min(1) }).parse(request.params);

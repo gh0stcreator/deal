@@ -131,9 +131,25 @@ model MediationSession {
   draftAgreements   DraftAgreement[]
   draftResponses    DraftAgreementResponse[]
   draftOutcomes     DraftAgreementOutcome[]
+  evaluation        SessionEvaluation?
   proposalSets      ProposalSet[]
   negotiationRounds NegotiationRound[]
   protocolEvents    ProtocolEvent[]
+}
+
+model SessionEvaluation {
+  caseId              String   @id
+  synthesisConfirmed  Boolean
+  synthesisClarified  Boolean
+  optionAcceptRate    Float
+  agreementReached    Boolean
+  agreementAfterEdit  Boolean
+  deadlock            Boolean
+  qualityFlagsJson    Json
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  session             MediationSession @relation(fields: [caseId], references: [id], onDelete: Cascade)
 }
 
 model SessionParticipant {
