@@ -62,17 +62,27 @@ export class PrismaSessionRepository implements SessionRepository {
         }
       });
 
-      await tx.sessionParticipant.deleteMany({ where: { sessionId: session.id } });
-
-      await tx.sessionParticipant.createMany({
-        data: session.participants.map((participant) => ({
-          id: participant.id,
-          sessionId: session.id,
-          role: participant.role,
-          telegramUserId: participant.telegramUserId,
-          consentGrantedAt: participant.consentGrantedAt
-        }))
-      });
+      for (const participant of session.participants) {
+        await tx.sessionParticipant.upsert({
+          where: {
+            sessionId_role: {
+              sessionId: session.id,
+              role: participant.role
+            }
+          },
+          update: {
+            telegramUserId: participant.telegramUserId,
+            consentGrantedAt: participant.consentGrantedAt
+          },
+          create: {
+            id: participant.id,
+            sessionId: session.id,
+            role: participant.role,
+            telegramUserId: participant.telegramUserId,
+            consentGrantedAt: participant.consentGrantedAt
+          }
+        });
+      }
     });
   }
 
