@@ -2,11 +2,17 @@ import { createHash } from 'node:crypto';
 import { Bot, Context, InlineKeyboard } from 'grammy';
 import { SystemClock } from '../../application/ports/Clock.js';
 import { AppLogger, createNoopLogger } from '../../application/ports/AppLogger.js';
+import { ConversationStateRepository } from '../../application/ports/ConversationStateRepository.js';
 import {
   ProblemSynthesisView,
   ProtocolGatewayService,
   StructuredIntakeAnswerInput
 } from '../../application/services/ProtocolGatewayService.js';
+import {
+  ConversationExpectedInputTypes,
+  ConversationStages,
+  ParticipantConversationState
+} from '../../domain/conversation/types.js';
 import { IntakeField } from '../../domain/intake/types.js';
 import { IssueReactionTypes } from '../../domain/issue/types.js';
 import { SuggestEditOperations } from '../../domain/negotiation/types.js';
@@ -15,6 +21,9 @@ import { ParticipantRoles, SessionStates } from '../../domain/session/types.js';
 import { DomainError } from '../../domain/session/errors.js';
 import { mapTelegramErrorText } from '../transport/errorMapping.js';
 import { InMemoryRateLimiter } from '../transport/rateLimiter.js';
+import { InMemoryConversationStateRepository } from '../repositories/InMemoryConversationStateRepository.js';
+import { IntakeDialogManager, ConversationTurn } from '../../application/ports/IntakeDialogManager.js';
+import { DeterministicIntakeDialogManager } from '../llm/DeterministicIntakeDialogManager.js';
 import {
   mapIntakeStatusView,
   mapNegotiationRoundStatusView,
@@ -40,50 +49,54 @@ type MediationIntakeStepId =
 interface MediationIntakeStepDefinition {
   id: MediationIntakeStepId;
   question: string;
-  confirmPrefix: string;
   writes: IntakeField[];
 }
 
 const mediationIntakeSteps: MediationIntakeStepDefinition[] = [
   {
     id: 'situation_facts',
-    question: 'Что конкретно сейчас происходит?',
-    confirmPrefix: 'Я понял так:',
+    question: 'Чтобы зафиксировать базу: что конкретно сейчас происходит?',
     writes: ['facts']
   },
   {
     id: 'tension_point',
-    question: 'Что в этой ситуации больше всего напрягает?',
-    confirmPrefix: 'Правильно понимаю основное напряжение:',
+    question: 'Что в этой ситуации задевает вас сильнее всего?',
     writes: ['interpretations']
   },
   {
     id: 'important_need_or_interest',
-    question: 'Что для вас в этой ситуации важнее всего?',
-    confirmPrefix: 'Для вас важно:',
+    question: 'Что для вас здесь важнее всего?',
     writes: ['interests']
   },
   {
     id: 'hard_constraint',
-    question: 'Что для вас точно не подойдёт?',
-    confirmPrefix: 'Фиксирую ограничение:',
+    question: 'Что для вас в таком решении точно неприемлемо?',
     writes: ['constraints', 'boundaries']
   },
   {
     id: 'desired_outcome',
-    question: 'Какой исход был бы для вас нормальным?',
-    confirmPrefix: 'Нормальный для вас исход:',
+    question: 'Какой результат для вас был бы рабочим?',
     writes: ['desired_outcome']
   },
   {
     id: 'acceptable_flexibility',
-    question: 'Где вы готовы уступить, если появится рабочий вариант?',
-    confirmPrefix: 'Готовность к компромиссу:',
+    question: 'Где вы готовы быть гибкими, если это поможет договориться?',
     writes: ['acceptable_concessions']
   }
 ];
 
 const mediationStepById = new Map(mediationIntakeSteps.map((step) => [step.id, step]));
+
+const intakeFieldToConversationKey: Record<IntakeField, string> = {
+  facts: 'situation_facts',
+  interpretations: 'tension_point',
+  interests: 'important_need_or_interest',
+  constraints: 'hard_constraint',
+  boundaries: 'hard_constraint',
+  desired_outcome: 'desired_outcome',
+  acceptable_concessions: 'acceptable_flexibility',
+  non_negotiables: 'hard_constraint'
+};
 
 const parseArgs = (text: string | undefined): string[] => {
   if (!text) {
@@ -151,8 +164,6 @@ const startKeyboard = () =>
     .row()
     .text('Посмотреть статус', 'menu:status');
 
-const welcomeKeyboard = () => new InlineKeyboard().text('Начать', 'menu:begin');
-
 const consentKeyboard = (sessionId: string) =>
   new InlineKeyboard()
     .text('Подтвердить участие', `consent:${sessionId}`)
@@ -164,6 +175,25 @@ const statusOnlyKeyboard = (sessionId: string) =>
 
 const createOnlyKeyboard = () =>
   new InlineKeyboard().text('Создать договорённость', 'menu:create');
+
+const truncateTopicLabel = (topic: string, max = 28): string =>
+  topic.length > max ? `${topic.slice(0, max - 1)}…` : topic;
+
+const buildResumeKeyboard = (
+  sessions: Array<{ id: string; topic: string | null }>
+): InlineKeyboard => {
+  const kb = new InlineKeyboard();
+  if (sessions.length <= 1) {
+    kb.text('Продолжить', 'menu:resume').row();
+  } else {
+    for (const { id, topic } of sessions) {
+      const label = topic ? `Продолжить «${truncateTopicLabel(topic)}»` : 'Продолжить';
+      kb.text(label, `menu:resume:${id}`).row();
+    }
+  }
+  kb.text('Начать новую', 'menu:new');
+  return kb;
+};
 
 const extractInviteToken = (value: string): string | null => {
   const trimmed = value.trim();
@@ -207,12 +237,16 @@ const normalizeProblemTopicInput = (value: string): string | null => {
   return plain;
 };
 
+
 export interface TelegramBotOptions {
   logger?: AppLogger;
   rate_limiter?: InMemoryRateLimiter;
   max_send_attempts?: number;
   base_backoff_ms?: number;
   sleep?: (ms: number) => Promise<void>;
+  render_safe_mode?: boolean;
+  conversation_state_repository?: ConversationStateRepository;
+  intake_dialog_manager?: IntakeDialogManager;
 }
 
 const isTransientTelegramSendError = (error: unknown): boolean => {
@@ -246,15 +280,21 @@ export const buildTelegramBot = (
   const rateLimiter = options.rate_limiter ?? new InMemoryRateLimiter(new SystemClock());
   const maxSendAttempts = options.max_send_attempts ?? 3;
   const baseBackoffMs = options.base_backoff_ms ?? 150;
+  const renderSafeMode = options.render_safe_mode ?? false;
+  const maxTelegramMessageLength = renderSafeMode ? 3500 : 3900;
+  const conversationStateRepository =
+    options.conversation_state_repository ?? new InMemoryConversationStateRepository();
   const sleep =
     options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const dialogManager = options.intake_dialog_manager ?? new DeterministicIntakeDialogManager();
+  const intakeConversationHistory = new Map<string, ConversationTurn[]>();
   const pendingInput = new Map<string, PendingInputKind>();
   const pendingCreateTopicDraft = new Map<string, { topic: string }>();
   const pendingMediationIntakeSession = new Map<string, string>();
   const pendingMediationIntakeStep = new Map<string, MediationIntakeStepId>();
   const pendingMediationIntakeDraft = new Map<
     string,
-    { sessionId: string; stepId: MediationIntakeStepId; text: string }
+    { sessionId: string; stepId: MediationIntakeStepId; text: string; reflection: string }
   >();
   const pendingSynthesisClarificationSession = new Map<string, string>();
   const problemSynthesisSent = new Set<string>();
@@ -276,6 +316,46 @@ export const buildTelegramBot = (
   >();
 
   const bot = new Bot(token);
+
+  const sanitizeTelegramText = (value: string): string => {
+    const normalized = value
+      .normalize('NFKC')
+      .replace(/\r\n/g, '\n')
+      .replace(/\r/g, '\n')
+      .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
+      .replace(/\uFFFD+/g, '')
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+    return normalized || ' ';
+  };
+
+  const splitTelegramText = (text: string): string[] => {
+    if (text.length <= maxTelegramMessageLength) {
+      return [text];
+    }
+
+    const chunks: string[] = [];
+    let rest = text;
+    while (rest.length > maxTelegramMessageLength) {
+      const candidate = rest.slice(0, maxTelegramMessageLength);
+      const splitAt = Math.max(candidate.lastIndexOf('\n'), candidate.lastIndexOf(' '));
+      const index = splitAt > maxTelegramMessageLength * 0.6 ? splitAt : maxTelegramMessageLength;
+      chunks.push(rest.slice(0, index).trim());
+      rest = rest.slice(index).trimStart();
+    }
+    if (rest.length > 0) {
+      chunks.push(rest);
+    }
+    return chunks.length > 0 ? chunks : [' '];
+  };
+
+  const prepareOutboundPayload = (text: string) => {
+    const rawText = text ?? '';
+    const sanitized = sanitizeTelegramText(rawText);
+    const chunks = splitTelegramText(sanitized);
+    return { rawText, chunks };
+  };
 
   const detectCurrentUxStep = (telegramUserId: string): string => {
     if (pendingSynthesisClarificationSession.has(telegramUserId)) {
@@ -454,47 +534,77 @@ export const buildTelegramBot = (
     metadata: { correlation_id: string; action_type: string },
     extra?: { reply_markup?: InlineKeyboard }
   ): Promise<boolean> => {
-    for (let attempt = 1; attempt <= maxSendAttempts; attempt += 1) {
-      try {
-        await ctx.reply(text, extra);
-        logger.info(
-          {
-            correlation_id: metadata.correlation_id,
-            action_type: metadata.action_type,
-            attempt
-          },
-          'telegram.outbound.send.success'
-        );
-        return true;
-      } catch (error) {
-        const isTransient = isTransientTelegramSendError(error);
-        logger.warn(
-          {
-            correlation_id: metadata.correlation_id,
-            action_type: metadata.action_type,
-            attempt,
-            transient: isTransient,
-            error: error instanceof Error ? error.message : 'unknown'
-          },
-          'telegram.outbound.send.failed'
-        );
+    const payload = prepareOutboundPayload(text);
+    for (let index = 0; index < payload.chunks.length; index += 1) {
+      const chunk = payload.chunks[index];
+      const isLastChunk = index === payload.chunks.length - 1;
+      const chunkExtra = isLastChunk ? extra : undefined;
+      logger.info(
+        {
+          correlation_id: metadata.correlation_id,
+          action_type: metadata.action_type,
+          chunk_index: index + 1,
+          chunk_count: payload.chunks.length,
+          raw_text: payload.rawText,
+          text: chunk,
+          length: chunk.length,
+          parse_mode: null,
+          buttons_attached: Boolean(chunkExtra?.reply_markup),
+          buttons_payload: chunkExtra?.reply_markup ? JSON.stringify(chunkExtra.reply_markup) : null
+        },
+        'telegram.outbound.payload'
+      );
 
-        if (!isTransient || attempt >= maxSendAttempts) {
-          logger.error(
+      let delivered = false;
+      for (let attempt = 1; attempt <= maxSendAttempts; attempt += 1) {
+        try {
+          await ctx.reply(chunk, chunkExtra);
+          logger.info(
             {
               correlation_id: metadata.correlation_id,
-              action_type: metadata.action_type
+              action_type: metadata.action_type,
+              attempt,
+              chunk_index: index + 1
             },
-            'telegram.outbound.send.give_up'
+            'telegram.outbound.send.success'
           );
-          return false;
-        }
+          delivered = true;
+          break;
+        } catch (error) {
+          const isTransient = isTransientTelegramSendError(error);
+          logger.warn(
+            {
+              correlation_id: metadata.correlation_id,
+              action_type: metadata.action_type,
+              attempt,
+              chunk_index: index + 1,
+              transient: isTransient,
+              error: error instanceof Error ? error.message : 'unknown'
+            },
+            'telegram.outbound.send.failed'
+          );
 
-        await sleep(baseBackoffMs * 2 ** (attempt - 1));
+          if (!isTransient || attempt >= maxSendAttempts) {
+            logger.error(
+              {
+                correlation_id: metadata.correlation_id,
+                action_type: metadata.action_type,
+                chunk_index: index + 1
+              },
+              'telegram.outbound.send.give_up'
+            );
+            return false;
+          }
+          await sleep(baseBackoffMs * 2 ** (attempt - 1));
+        }
+      }
+
+      if (!delivered) {
+        return false;
       }
     }
 
-    return false;
+    return true;
   };
 
   const requireArgCount = async (
@@ -576,38 +686,69 @@ export const buildTelegramBot = (
     metadata: { correlation_id: string; action_type: string },
     extra?: { reply_markup?: InlineKeyboard }
   ): Promise<boolean> => {
-    for (let attempt = 1; attempt <= maxSendAttempts; attempt += 1) {
-      try {
-        await bot.api.sendMessage(Number(chatId), text, extra);
-        logger.info(
-          {
-            correlation_id: metadata.correlation_id,
-            action_type: metadata.action_type,
-            attempt
-          },
-          'telegram.outbound.send.success'
-        );
-        return true;
-      } catch (error) {
-        const isTransient = isTransientTelegramSendError(error);
-        logger.warn(
-          {
-            correlation_id: metadata.correlation_id,
-            action_type: metadata.action_type,
-            attempt,
-            transient: isTransient,
-            error: error instanceof Error ? error.message : 'unknown'
-          },
-          'telegram.outbound.send.failed'
-        );
+    const payload = prepareOutboundPayload(text);
+    for (let index = 0; index < payload.chunks.length; index += 1) {
+      const chunk = payload.chunks[index];
+      const isLastChunk = index === payload.chunks.length - 1;
+      const chunkExtra = isLastChunk ? extra : undefined;
+      logger.info(
+        {
+          correlation_id: metadata.correlation_id,
+          action_type: metadata.action_type,
+          chat_id: chatId,
+          chunk_index: index + 1,
+          chunk_count: payload.chunks.length,
+          raw_text: payload.rawText,
+          text: chunk,
+          length: chunk.length,
+          parse_mode: null,
+          buttons_attached: Boolean(chunkExtra?.reply_markup),
+          buttons_payload: chunkExtra?.reply_markup ? JSON.stringify(chunkExtra.reply_markup) : null
+        },
+        'telegram.outbound.payload'
+      );
 
-        if (!isTransient || attempt >= maxSendAttempts) {
-          return false;
+      let delivered = false;
+      for (let attempt = 1; attempt <= maxSendAttempts; attempt += 1) {
+        try {
+          await bot.api.sendMessage(Number(chatId), chunk, chunkExtra);
+          logger.info(
+            {
+              correlation_id: metadata.correlation_id,
+              action_type: metadata.action_type,
+              attempt,
+              chunk_index: index + 1
+            },
+            'telegram.outbound.send.success'
+          );
+          delivered = true;
+          break;
+        } catch (error) {
+          const isTransient = isTransientTelegramSendError(error);
+          logger.warn(
+            {
+              correlation_id: metadata.correlation_id,
+              action_type: metadata.action_type,
+              attempt,
+              chunk_index: index + 1,
+              transient: isTransient,
+              error: error instanceof Error ? error.message : 'unknown'
+            },
+            'telegram.outbound.send.failed'
+          );
+
+          if (!isTransient || attempt >= maxSendAttempts) {
+            return false;
+          }
+          await sleep(baseBackoffMs * 2 ** (attempt - 1));
         }
-        await sleep(baseBackoffMs * 2 ** (attempt - 1));
+      }
+
+      if (!delivered) {
+        return false;
       }
     }
-    return false;
+    return true;
   };
 
   const mediationIntakeConfirmationKeyboard = (
@@ -632,6 +773,90 @@ export const buildTelegramBot = (
       }
     }
     return null;
+  };
+
+  const committedConversationFields = (
+    fields: Awaited<ReturnType<ProtocolGatewayService['getIntakeProgress']>>['fields']
+  ): string[] => {
+    const committed = new Set<string>();
+    for (const [field, entry] of Object.entries(fields) as Array<[IntakeField, { rawValue: string | null; normalizedValue: string | null }]>) {
+      if (entry.rawValue && entry.normalizedValue) {
+        committed.add(intakeFieldToConversationKey[field]);
+      }
+    }
+    return [...committed];
+  };
+
+  const upsertConversationState = async (input: {
+    sessionId: string;
+    telegramUserId: string;
+    currentStage: ParticipantConversationState['currentStage'];
+    currentQuestionKey: string | null;
+    expectedInputType: ParticipantConversationState['expectedInputType'];
+    currentDraft: string | null;
+    committedFields: string[];
+    pendingAction: string | null;
+    lastEventId: number | null;
+    lastErrorCode?: string | null;
+    lastInboundEvent?: string | null;
+    lastOutboundAction?: string | null;
+  }) => {
+    await conversationStateRepository.upsert({
+      sessionId: input.sessionId,
+      telegramUserId: input.telegramUserId,
+      currentStage: input.currentStage,
+      currentQuestionKey: input.currentQuestionKey,
+      expectedInputType: input.expectedInputType,
+      currentDraft: input.currentDraft,
+      committedFields: input.committedFields,
+      pendingAction: input.pendingAction,
+      lastEventId: input.lastEventId,
+      lastErrorCode: input.lastErrorCode ?? null,
+      lastInboundEvent: input.lastInboundEvent ?? null,
+      lastOutboundAction: input.lastOutboundAction ?? null
+    });
+  };
+
+  const findActiveIntakeState = async (telegramUserId: string) => {
+    const state = await conversationStateRepository.findActiveByUser(telegramUserId);
+    if (!state || state.currentStage !== ConversationStages.INTAKE) {
+      return null;
+    }
+    return state;
+  };
+
+  const resolveIntakeReflection = async (
+    sessionId: string,
+    telegramUserId: string,
+    stepId: MediationIntakeStepId,
+    text: string
+  ): Promise<string> => {
+    const step = mediationStepById.get(stepId);
+    if (!step) {
+      return 'Слышу вас. Я правильно понял суть?';
+    }
+
+    try {
+      const preview = await gateway.previewIntakeReflection(
+        sessionId,
+        telegramUserId,
+        step.writes[0] ?? 'facts',
+        text,
+        step.question
+      );
+      const reflection = preview.reflection?.trim();
+      return reflection || 'Слышу вас. Я правильно понял суть?';
+    } catch (error) {
+      logger.warn(
+        {
+          correlation_id: `tg:intake_reflection:${sessionId}:${telegramUserId}`,
+          action_type: 'mediation_intake_reflection',
+          code: error instanceof DomainError ? error.code : 'INTAKE_REFLECTION_FAILED'
+        },
+        'telegram.intake.reflection.failed'
+      );
+      return 'Слышу вас. Я правильно понял суть?';
+    }
   };
 
   const askNextMediationIntakeQuestion = async (
@@ -664,11 +889,30 @@ export const buildTelegramBot = (
       pendingMediationIntakeSession.delete(participantTelegramUserId);
       pendingMediationIntakeStep.delete(participantTelegramUserId);
       pendingMediationIntakeDraft.delete(participantTelegramUserId);
+      // Clear intake conversation history for this participant in this session
+      const historyKeyToDelete = `${sessionId}:${participantTelegramUserId}`;
+      intakeConversationHistory.delete(historyKeyToDelete);
+      await upsertConversationState({
+        sessionId,
+        telegramUserId: participantTelegramUserId,
+        currentStage: ConversationStages.COMPLETED,
+        currentQuestionKey: null,
+        expectedInputType: ConversationExpectedInputTypes.NONE,
+        currentDraft: null,
+        committedFields: committedConversationFields(view.fields),
+        pendingAction: null,
+        lastEventId: ctx?.update.update_id ?? null,
+        lastInboundEvent: source === 'current' ? 'intake_transition' : 'intake_direct_transition',
+        lastOutboundAction: 'mediation_intake_completed'
+      });
 
       const session = await gateway.getSessionStatus(sessionId, participantTelegramUserId);
       const allCompleted = session.state === SessionStates.READY_FOR_SYNTHESIS;
       if (!allCompleted) {
-        const waitText = ['Спасибо, ваша часть собрана.', 'Сейчас ждём второго человека.'].join('\n');
+        const waitText = [
+          'Готово. Я услышал вас.',
+          'Как только второй участник завершит свою часть — мы пойдём дальше.'
+        ].join('\n');
         if (source === 'current' && ctx) {
           await sendReplyWithRetry(ctx, waitText, {
             correlation_id: makeCorrelationId(ctx),
@@ -770,24 +1014,22 @@ export const buildTelegramBot = (
 
     pendingMediationIntakeSession.set(participantTelegramUserId, sessionId);
     pendingMediationIntakeStep.set(participantTelegramUserId, nextStep.id);
+    await upsertConversationState({
+      sessionId,
+      telegramUserId: participantTelegramUserId,
+      currentStage: ConversationStages.INTAKE,
+      currentQuestionKey: nextStep.id,
+      expectedInputType: ConversationExpectedInputTypes.TEXT,
+      currentDraft: null,
+      committedFields: committedConversationFields(view.fields),
+      pendingAction: null,
+      lastEventId: ctx?.update.update_id ?? null,
+      lastInboundEvent: source === 'current' ? 'intake_transition' : 'intake_direct_transition',
+      lastOutboundAction: 'mediation_intake_question'
+    });
     const text =
       nextStep.id === 'situation_facts'
-        ? [
-            'Важно:',
-            '',
-            'Пишите как есть, не смягчая.',
-            'Другой человек не увидит это сообщение напрямую.',
-            '',
-            'Постарайся описать:',
-            '— что сейчас происходит',
-            '— что вам важно в этой ситуации',
-            '— чего вы хотите дальше',
-            '',
-            'Дальше я сам соберу общую картину.',
-            'Это станет основой, от которой мы будем двигаться дальше.',
-            '',
-            nextStep.question
-          ].join('\n')
+        ? 'Расскажите, что происходит. Как вы это видите?'
         : nextStep.question;
     if (source === 'current' && ctx) {
       await sendReplyWithRetry(
@@ -798,6 +1040,14 @@ export const buildTelegramBot = (
           action_type: 'mediation_intake_question'
         }
       );
+      if (nextStep.id === 'situation_facts') {
+        const historyKey = `${sessionId}:${participantTelegramUserId}`;
+        const history = intakeConversationHistory.get(historyKey) ?? [];
+        if (history.length === 0) {
+          history.push({ role: 'assistant', text });
+          intakeConversationHistory.set(historyKey, history);
+        }
+      }
       return;
     }
 
@@ -809,6 +1059,14 @@ export const buildTelegramBot = (
         action_type: 'mediation_intake_question'
       }
     );
+    if (nextStep.id === 'situation_facts') {
+      const historyKey = `${sessionId}:${participantTelegramUserId}`;
+      const history = intakeConversationHistory.get(historyKey) ?? [];
+      if (history.length === 0) {
+        history.push({ role: 'assistant', text });
+        intakeConversationHistory.set(historyKey, history);
+      }
+    }
   };
 
   const createTopicDraftKeyboard = () =>
@@ -864,10 +1122,9 @@ export const buildTelegramBot = (
     option: Awaited<ReturnType<ProtocolGatewayService['generateIssueResolutionLoop']>>['options'][number]
   ): string =>
     [
-      `Вариант: ${option.title}`,
       option.description,
       '',
-      `Компромисс: ${option.tradeoff_note}`
+      `Что придётся учесть: ${option.tradeoff_note}`
     ].join('\n');
 
   const draftAgreementKeyboard = (sessionId: string, draftVersion: number) =>
@@ -1085,7 +1342,7 @@ export const buildTelegramBot = (
     }
   };
 
-  const resumeActiveScenario = async (ctx: Context, telegramUserId: string): Promise<boolean> => {
+  const resumeActiveScenario = async (ctx: Context, telegramUserId: string, targetSessionId?: string): Promise<boolean> => {
     const pendingJoin = pendingInput.get(telegramUserId) === 'JOIN_TOKEN';
     if (pendingJoin) {
       await sendReplyWithRetry(
@@ -1126,11 +1383,63 @@ export const buildTelegramBot = (
       return true;
     }
 
-    const pendingSessionId = pendingMediationIntakeSession.get(telegramUserId);
-    if (pendingSessionId) {
+    const tryGetSessionTopic = async (sessionId: string): Promise<string | null> => {
+      try {
+        const session = await gateway.getSessionStatus(sessionId, telegramUserId);
+        return session.problemTopic ?? null;
+      } catch {
+        return null;
+      }
+    };
+
+    const stepProgressLine = (stepId: string | null): string | null => {
+      if (!stepId) return null;
+      const idx = mediationIntakeSteps.findIndex((s) => s.id === stepId);
+      if (idx === -1) return null;
+      return `Вопрос ${idx + 1} из ${mediationIntakeSteps.length}`;
+    };
+
+    const persistentIntake = await (async () => {
+      const state = await findActiveIntakeState(telegramUserId);
+      if (!state) return null;
+      // If a specific session was requested, only resume that one
+      if (targetSessionId && state.sessionId !== targetSessionId) return null;
+      return state;
+    })();
+    if (persistentIntake) {
+      const step = persistentIntake.currentQuestionKey
+        ? mediationStepById.get(persistentIntake.currentQuestionKey as MediationIntakeStepId)
+        : null;
+      const topic = await tryGetSessionTopic(persistentIntake.sessionId);
+      const progress = stepProgressLine(persistentIntake.currentQuestionKey);
+      const contextPrefix = [topic ? `Тема: «${topic}»` : null, progress]
+        .filter(Boolean)
+        .join(' · ');
+      // Always resume by asking the actual next question based on real intake progress.
+      // (Ignore stale CONFIRM state from old code — no longer used.)
       await sendReplyWithRetry(
         ctx,
-        'Продолжаем с текущего вопроса.',
+        contextPrefix ? `Продолжаем. ${contextPrefix}.` : 'Продолжаем с текущего вопроса.',
+        {
+          correlation_id: makeCorrelationId(ctx),
+          action_type: 'start_resume'
+        }
+      );
+      await askNextMediationIntakeQuestion(telegramUserId, persistentIntake.sessionId, 'current', ctx);
+      return true;
+    }
+
+    const pendingSessionId = pendingMediationIntakeSession.get(telegramUserId);
+    if (pendingSessionId) {
+      const topic = await tryGetSessionTopic(pendingSessionId);
+      const currentStepId = pendingMediationIntakeStep.get(telegramUserId) ?? null;
+      const progress = stepProgressLine(currentStepId);
+      const contextPrefix = [topic ? `Тема: «${topic}»` : null, progress]
+        .filter(Boolean)
+        .join(' · ');
+      await sendReplyWithRetry(
+        ctx,
+        contextPrefix ? `Продолжаем. ${contextPrefix}.` : 'Продолжаем с текущего вопроса.',
         {
           correlation_id: makeCorrelationId(ctx),
           action_type: 'start_resume'
@@ -1142,13 +1451,17 @@ export const buildTelegramBot = (
 
     const intakeDraft = pendingMediationIntakeDraft.get(telegramUserId);
     if (intakeDraft) {
-      const step = mediationStepById.get(intakeDraft.stepId);
+      const topic = await tryGetSessionTopic(intakeDraft.sessionId);
+      const progress = stepProgressLine(intakeDraft.stepId);
+      const contextPrefix = [topic ? `Тема: «${topic}»` : null, progress]
+        .filter(Boolean)
+        .join(' · ');
+      const headerLine = contextPrefix
+        ? `Продолжаем. ${contextPrefix}.`
+        : 'Вы уже на этом шаге. Подтвердите или поправьте формулировку.';
       await sendReplyWithRetry(
         ctx,
-        [
-          'У вас уже есть активный шаг подтверждения.',
-          step ? [step.confirmPrefix, intakeDraft.text, 'Я понял правильно?'].join('\n') : 'Подтвердите текущий ответ.'
-        ].join('\n\n'),
+        [headerLine, intakeDraft.reflection].join('\n\n'),
         {
           correlation_id: makeCorrelationId(ctx),
           action_type: 'start_resume'
@@ -1162,7 +1475,7 @@ export const buildTelegramBot = (
     if (pendingClarificationSessionId) {
       await sendReplyWithRetry(
         ctx,
-        ['У вас уже есть активный шаг уточнения.', 'Что именно я понял не так?'].join('\n'),
+        'Мы здесь остановились. Напишите что именно нужно поправить.',
         {
           correlation_id: makeCorrelationId(ctx),
           action_type: 'start_resume'
@@ -1208,6 +1521,13 @@ export const buildTelegramBot = (
         }
       );
       await describeSessionForUser(ctx, lastSession, telegramUserId);
+      return true;
+    }
+
+    // Last resort: find any conversation state in DB to recover session after restart
+    const anyState = await conversationStateRepository.findActiveByUser(telegramUserId);
+    if (anyState && (!targetSessionId || anyState.sessionId === targetSessionId)) {
+      await describeSessionForUser(ctx, anyState.sessionId, telegramUserId);
       return true;
     }
 
@@ -1499,7 +1819,53 @@ export const buildTelegramBot = (
       return;
     }
 
-    if (await resumeActiveScenario(ctx, telegramUserId)) {
+    const hasAnyPendingState =
+      pendingInput.has(telegramUserId) ||
+      pendingCreateTopicDraft.has(telegramUserId) ||
+      pendingMediationIntakeSession.has(telegramUserId) ||
+      pendingMediationIntakeDraft.has(telegramUserId) ||
+      pendingSynthesisClarificationSession.has(telegramUserId) ||
+      pendingIssueChange.has(telegramUserId) ||
+      pendingDraftAgreementChange.has(telegramUserId) ||
+      lastSessionByUser.has(telegramUserId);
+    // Always check DB so we don't miss sessions that only exist there
+    const persistentIntake = await findActiveIntakeState(telegramUserId);
+    if (hasAnyPendingState || persistentIntake) {
+      const rawSessionIds = [
+        pendingMediationIntakeSession.get(telegramUserId),
+        pendingMediationIntakeDraft.get(telegramUserId)?.sessionId,
+        pendingSynthesisClarificationSession.get(telegramUserId),
+        pendingIssueChange.get(telegramUserId)?.sessionId,
+        pendingDraftAgreementChange.get(telegramUserId)?.sessionId,
+        persistentIntake?.sessionId,
+        lastSessionByUser.get(telegramUserId),
+      ].filter((id): id is string => Boolean(id));
+      const uniqueSessionIds = [...new Set(rawSessionIds)];
+
+      const sessionInfos = await Promise.all(
+        uniqueSessionIds.map(async (id) => {
+          try {
+            const session = await gateway.getSessionStatus(id, telegramUserId);
+            return { id, topic: session.problemTopic ?? null };
+          } catch {
+            return { id, topic: null };
+          }
+        })
+      );
+
+      const messageText =
+        sessionInfos.length === 1 && sessionInfos[0].topic
+          ? `Есть незавершённая договорённость:\n«${sessionInfos[0].topic}»`
+          : sessionInfos.length > 1
+            ? 'Есть несколько незавершённых договорённостей.'
+            : 'Есть незавершённая договорённость.';
+
+      await sendReplyWithRetry(
+        ctx,
+        messageText,
+        { correlation_id: makeCorrelationId(ctx), action_type: 'start_resume_prompt' },
+        { reply_markup: buildResumeKeyboard(sessionInfos) }
+      );
       return;
     }
 
@@ -1522,15 +1888,13 @@ export const buildTelegramBot = (
         '— я собираю общую картину',
         '— помогаю вам найти решение',
         '',
-        'Ваши сообщения не пересылаются друг другу напрямую.',
-        '',
-        'Готовы начать?'
+        'Ваши сообщения не пересылаются друг другу напрямую.'
       ].join('\n'),
       {
         correlation_id: makeCorrelationId(ctx),
         action_type: 'start'
       },
-      { reply_markup: welcomeKeyboard() }
+      { reply_markup: startKeyboard() }
     );
   });
 
@@ -1540,7 +1904,7 @@ export const buildTelegramBot = (
     pendingCreateTopicDraft.delete(telegramUserId);
     await sendReplyWithRetry(
       ctx,
-      'О чём хотите договориться? Опиши коротко.',
+      'О чём хотите договориться? Опишите коротко.',
       {
         correlation_id: makeCorrelationId(ctx),
         action_type: 'create_topic_prompt'
@@ -2072,7 +2436,7 @@ export const buildTelegramBot = (
       pendingCreateTopicDraft.delete(telegramUserId);
       await sendReplyWithRetry(
         ctx,
-        'О чём хотите договориться? Опиши коротко.',
+        'О чём хотите договориться? Опишите коротко.',
         {
           correlation_id: makeCorrelationId(ctx),
           action_type: 'create_topic_prompt'
@@ -2111,6 +2475,60 @@ export const buildTelegramBot = (
     );
   });
 
+  bot.callbackQuery(/^menu:resume(?::([A-Za-z0-9_-]+))?$/, async (ctx) => {
+    await safeAnswerCallback(ctx);
+    const telegramUserId = userIdFromCtx(ctx);
+    const targetSessionId = ctx.match[1] ?? undefined;
+    try {
+      if (!(await resumeActiveScenario(ctx, telegramUserId, targetSessionId))) {
+        await sendReplyWithRetry(
+          ctx,
+          [
+            'Привет.',
+            '',
+            'Я помогаю двум людям спокойно договориться, если обсуждать напрямую сложно.',
+            '',
+            'Как это работает:',
+            '— каждый из вас сначала пишет свою версию отдельно',
+            '— я собираю общую картину',
+            '— помогаю вам найти решение',
+            '',
+            'Ваши сообщения не пересылаются друг другу напрямую.'
+          ].join('\n'),
+          { correlation_id: makeCorrelationId(ctx), action_type: 'start' },
+          { reply_markup: startKeyboard() }
+        );
+      }
+    } catch (error) {
+      await replyWithMappedError(ctx, error, 'start_resume', 'menu:resume');
+    }
+  });
+
+  bot.callbackQuery('menu:new', async (ctx) => {
+    await safeAnswerCallback(ctx);
+    const telegramUserId = userIdFromCtx(ctx);
+    pendingInput.delete(telegramUserId);
+    pendingCreateTopicDraft.delete(telegramUserId);
+    pendingMediationIntakeSession.delete(telegramUserId);
+    pendingMediationIntakeStep.delete(telegramUserId);
+    pendingMediationIntakeDraft.delete(telegramUserId);
+    pendingIssueChange.delete(telegramUserId);
+    pendingDraftAgreementChange.delete(telegramUserId);
+    lastSessionByUser.delete(telegramUserId);
+    // Clear any intake conversation history for this user
+    for (const key of intakeConversationHistory.keys()) {
+      if (key.endsWith(`:${telegramUserId}`)) {
+        intakeConversationHistory.delete(key);
+      }
+    }
+    pendingInput.set(telegramUserId, 'CREATE_TOPIC');
+    await sendReplyWithRetry(
+      ctx,
+      'О чём хотите договориться? Опишите коротко.',
+      { correlation_id: makeCorrelationId(ctx), action_type: 'create_topic_prompt' }
+    );
+  });
+
   bot.callbackQuery(/^consent:([A-Za-z0-9_-]{3,})$/, async (ctx) => {
     await safeAnswerCallback(ctx);
     await giveConsentFlow(ctx, ctx.match[1], userIdFromCtx(ctx), 'give_consent_button');
@@ -2131,6 +2549,20 @@ export const buildTelegramBot = (
     pendingMediationIntakeSession.set(telegramUserId, sessionId);
     pendingMediationIntakeStep.set(telegramUserId, stepId);
     pendingMediationIntakeDraft.delete(telegramUserId);
+    const progress = await gateway.getIntakeProgress(sessionId, telegramUserId);
+    await upsertConversationState({
+      sessionId,
+      telegramUserId,
+      currentStage: ConversationStages.INTAKE,
+      currentQuestionKey: stepId,
+      expectedInputType: ConversationExpectedInputTypes.TEXT,
+      currentDraft: null,
+      committedFields: committedConversationFields(progress.fields),
+      pendingAction: null,
+      lastEventId: ctx.update.update_id,
+      lastInboundEvent: 'intake_edit',
+      lastOutboundAction: 'mediation_intake_edit'
+    });
     await sendReplyWithRetry(
       ctx,
       'Отправьте исправленный вариант.',
@@ -2148,6 +2580,14 @@ export const buildTelegramBot = (
     const stepId = ctx.match[2] as MediationIntakeStepId;
     const telegramUserId = userIdFromCtx(ctx);
     const step = mediationStepById.get(stepId);
+    const persistedConversationState = await conversationStateRepository.findBySessionAndUser(
+      sessionId,
+      telegramUserId
+    );
+    const currentIntakeSession = pendingMediationIntakeSession.get(telegramUserId) ?? null;
+    const currentIntakeStep = pendingMediationIntakeStep.get(telegramUserId) ?? null;
+    const draftFromMemory = pendingMediationIntakeDraft.get(telegramUserId);
+    const sessionContext = await resolveSessionContext(ctx, telegramUserId);
     if (!step) {
       await sendReplyWithRetry(ctx, 'Не могу найти этот шаг. Отправьте ответ ещё раз.', {
         correlation_id: makeCorrelationId(ctx),
@@ -2156,49 +2596,141 @@ export const buildTelegramBot = (
       return;
     }
 
-    const draft = pendingMediationIntakeDraft.get(telegramUserId);
-    if (!draft || draft.sessionId !== sessionId || draft.stepId !== stepId) {
+    const draftFromMemoryIsValid =
+      Boolean(draftFromMemory) &&
+      draftFromMemory?.sessionId === sessionId &&
+      draftFromMemory?.stepId === stepId;
+    const primaryField = step.writes[0] ?? 'facts';
+    let beforeProgress: Awaited<ReturnType<ProtocolGatewayService['getIntakeProgress']>> | null = null;
+    try {
+      beforeProgress = await gateway.getIntakeProgress(sessionId, telegramUserId);
+    } catch {
+      beforeProgress = null;
+    }
+
+    const persistedStepBefore = beforeProgress ? findNextMediationIntakeStep(beforeProgress.fields)?.id ?? null : null;
+    let draftValue: string | null = draftFromMemoryIsValid ? draftFromMemory!.text : null;
+    if (!draftValue) {
       try {
-        const progress = await gateway.getIntakeProgress(sessionId, telegramUserId);
-        const alreadyCompleted = step.writes.every((field) => {
-          const entry = progress.fields[field];
-          return Boolean(entry.rawValue && entry.normalizedValue);
-        });
-        if (alreadyCompleted) {
-          await sendReplyWithRetry(
-            ctx,
-            'Этот ответ уже подтверждён.',
-            {
-              correlation_id: makeCorrelationId(ctx),
-              action_type: 'mediation_intake_confirm'
-            }
-          );
-          await askNextMediationIntakeQuestion(telegramUserId, sessionId, 'current', ctx);
-          return;
-        }
-        const nextStep = findNextMediationIntakeStep(progress.fields);
-        if (nextStep) {
-          pendingMediationIntakeSession.set(telegramUserId, sessionId);
-          pendingMediationIntakeStep.set(telegramUserId, nextStep.id);
-          await sendReplyWithRetry(
-            ctx,
-            'Похоже, это старый шаг. Продолжаем с актуального вопроса.',
-            {
-              correlation_id: makeCorrelationId(ctx),
-              action_type: 'mediation_intake_confirm'
-            }
-          );
-          await askNextMediationIntakeQuestion(telegramUserId, sessionId, 'current', ctx);
-          return;
-        }
+        draftValue = await gateway.getLatestIntakeDraft(sessionId, telegramUserId, primaryField);
       } catch {
-        // fallthrough to repeat prompt
+        draftValue = null;
+      }
+    }
+
+    logger.info(
+      {
+        correlation_id: makeCorrelationId(ctx),
+        session_id: sessionId,
+        telegram_user_id: telegramUserId,
+        role: sessionContext.role,
+        current_ux_step: detectCurrentUxStep(telegramUserId),
+        current_protocol_state: sessionContext.protocol_state,
+        intake_step: stepId,
+        current_intake_session: currentIntakeSession,
+        current_intake_step: currentIntakeStep,
+        persisted_conversation_stage: persistedConversationState?.currentStage ?? null,
+        persisted_expected_input_type: persistedConversationState?.expectedInputType ?? null,
+        persisted_current_question_key: persistedConversationState?.currentQuestionKey ?? null,
+        draft_present: Boolean(draftValue),
+        draft_value: draftValue,
+        persisted_intake_step_before: persistedStepBefore,
+        persisted_step_completed_before: beforeProgress
+          ? step.writes.every((field) => {
+              const entry = beforeProgress!.fields[field];
+              return Boolean(entry.rawValue && entry.normalizedValue);
+            })
+          : null,
+        next_step_attempted: null,
+        branch: draftFromMemoryIsValid ? 'memory_draft' : 'persisted_draft_lookup',
+        error_code: null
+      },
+      'telegram.intake.confirm.trace'
+    );
+
+    if (
+      persistedConversationState &&
+      (persistedConversationState.currentStage !== ConversationStages.INTAKE ||
+        persistedConversationState.expectedInputType !== ConversationExpectedInputTypes.CONFIRM ||
+        persistedConversationState.currentQuestionKey !== stepId)
+    ) {
+      const progress = await gateway.getIntakeProgress(sessionId, telegramUserId);
+      const liveStep = findNextMediationIntakeStep(progress.fields);
+      if (liveStep) {
+        await upsertConversationState({
+          sessionId,
+          telegramUserId,
+          currentStage: ConversationStages.INTAKE,
+          currentQuestionKey: liveStep.id,
+          expectedInputType: ConversationExpectedInputTypes.TEXT,
+          currentDraft: null,
+          committedFields: committedConversationFields(progress.fields),
+          pendingAction: null,
+          lastEventId: ctx.update.update_id,
+          lastErrorCode: 'STALE_CONFIRM_CALLBACK',
+          lastInboundEvent: 'intake_confirm',
+          lastOutboundAction: 'mediation_intake_question'
+        });
+      }
+      await sendReplyWithRetry(
+        ctx,
+        'Это старое подтверждение. Продолжаем с актуального шага.',
+        {
+          correlation_id: makeCorrelationId(ctx),
+          action_type: 'mediation_intake_confirm'
+        }
+      );
+      await askNextMediationIntakeQuestion(telegramUserId, sessionId, 'current', ctx);
+      return;
+    }
+
+    if (!draftValue) {
+      const alreadyCompleted = beforeProgress
+        ? step.writes.every((field) => {
+            const entry = beforeProgress!.fields[field];
+            return Boolean(entry.rawValue && entry.normalizedValue);
+          })
+        : false;
+      if (alreadyCompleted) {
+        await sendReplyWithRetry(
+          ctx,
+          'Этот ответ уже подтверждён.',
+          {
+            correlation_id: makeCorrelationId(ctx),
+            action_type: 'mediation_intake_confirm'
+          }
+        );
+        await askNextMediationIntakeQuestion(telegramUserId, sessionId, 'current', ctx);
+        return;
       }
       pendingMediationIntakeSession.set(telegramUserId, sessionId);
       pendingMediationIntakeStep.set(telegramUserId, stepId);
+      pendingMediationIntakeDraft.delete(telegramUserId);
+      await upsertConversationState({
+        sessionId,
+        telegramUserId,
+        currentStage: ConversationStages.INTAKE,
+        currentQuestionKey: stepId,
+        expectedInputType: ConversationExpectedInputTypes.TEXT,
+        currentDraft: null,
+        committedFields: beforeProgress ? committedConversationFields(beforeProgress.fields) : [],
+        pendingAction: null,
+        lastEventId: ctx.update.update_id,
+        lastErrorCode: 'DRAFT_MISSING',
+        lastInboundEvent: 'intake_confirm',
+        lastOutboundAction: 'mediation_intake_question'
+      });
       await sendReplyWithRetry(
         ctx,
-        'Повторите, пожалуйста, ответ на этот вопрос.',
+        'Кажется, шаг сбился. Давайте продолжим.',
+        {
+          correlation_id: makeCorrelationId(ctx),
+          action_type: 'mediation_intake_confirm'
+        }
+      );
+      await sendReplyWithRetry(
+        ctx,
+        step.question,
         {
           correlation_id: makeCorrelationId(ctx),
           action_type: 'mediation_intake_confirm'
@@ -2210,7 +2742,7 @@ export const buildTelegramBot = (
     try {
       const answers: StructuredIntakeAnswerInput[] = step.writes.map((field) => ({
         field,
-        value: draft.text
+        value: draftValue!
       }));
       if (step.id === 'acceptable_flexibility') {
         const progress = await gateway.getIntakeProgress(sessionId, telegramUserId);
@@ -2227,24 +2759,113 @@ export const buildTelegramBot = (
         {
           correlation_id: makeCorrelationId(ctx),
           channel: 'TELEGRAM',
-          idempotency_key: makeStableIntakeConfirmKey(sessionId, telegramUserId, step.id, draft.text),
+          idempotency_key: makeStableIntakeConfirmKey(sessionId, telegramUserId, step.id, draftValue!),
           action_type: 'mediation_intake_confirm',
           case_id: sessionId,
           participant_id: telegramUserId,
-          payload: { session_id: sessionId, step_id: step.id, text: draft.text }
+          payload: { session_id: sessionId, step_id: step.id, text: draftValue! }
         },
         sessionId,
         telegramUserId,
         answers
       );
       pendingMediationIntakeDraft.delete(telegramUserId);
-      await sendReplyWithRetry(ctx, 'Принято. Идём дальше.', {
-        correlation_id: makeCorrelationId(ctx),
-        action_type: 'mediation_intake_confirm'
-      });
+      const afterProgress = await gateway.getIntakeProgress(sessionId, telegramUserId);
+      const persistedStepAfter = findNextMediationIntakeStep(afterProgress.fields)?.id ?? null;
+      logger.info(
+        {
+          correlation_id: makeCorrelationId(ctx),
+          session_id: sessionId,
+          telegram_user_id: telegramUserId,
+          current_ux_step: detectCurrentUxStep(telegramUserId),
+          current_protocol_state: sessionContext.protocol_state,
+          intake_step: stepId,
+          persisted_intake_step_before: persistedStepBefore,
+          persisted_intake_step_after: persistedStepAfter,
+          persisted_step_completed_after: step.writes.every((field) => {
+            const entry = afterProgress.fields[field];
+            return Boolean(entry.rawValue && entry.normalizedValue);
+          }),
+          draft_present: true,
+          draft_value: draftValue!,
+          next_step_attempted: persistedStepAfter,
+          branch: 'confirm_committed',
+          error_code: null
+        },
+        'telegram.intake.confirm.trace'
+      );
       await askNextMediationIntakeQuestion(telegramUserId, sessionId, 'current', ctx);
     } catch (error) {
-      await replyWithMappedError(ctx, error, 'mediation_intake_confirm', 'callback:intake_confirm');
+      const domainCode = error instanceof DomainError ? error.code : 'INTAKE_CONFIRM_FAILED';
+      logger.warn(
+        {
+          correlation_id: makeCorrelationId(ctx),
+          session_id: sessionId,
+          telegram_user_id: telegramUserId,
+          current_ux_step: detectCurrentUxStep(telegramUserId),
+          current_protocol_state: sessionContext.protocol_state,
+          intake_step: stepId,
+          persisted_intake_step_before: persistedStepBefore,
+          draft_present: Boolean(draftValue),
+          draft_value: draftValue,
+          next_step_attempted: null,
+          branch: 'confirm_error',
+          error_code: domainCode
+        },
+        'telegram.intake.confirm.trace'
+      );
+      pendingMediationIntakeSession.set(telegramUserId, sessionId);
+      pendingMediationIntakeStep.set(telegramUserId, stepId);
+      pendingMediationIntakeDraft.delete(telegramUserId);
+      await upsertConversationState({
+        sessionId,
+        telegramUserId,
+        currentStage: ConversationStages.INTAKE,
+        currentQuestionKey: stepId,
+        expectedInputType: ConversationExpectedInputTypes.TEXT,
+        currentDraft: null,
+        committedFields: beforeProgress ? committedConversationFields(beforeProgress.fields) : [],
+        pendingAction: null,
+        lastEventId: ctx.update.update_id,
+        lastErrorCode: domainCode,
+        lastInboundEvent: 'intake_confirm',
+        lastOutboundAction: 'mediation_intake_question'
+      });
+      if (domainCode === 'INTAKE_VALIDATION_ERROR' && error instanceof Error && error.message) {
+        await sendReplyWithRetry(
+          ctx,
+          error.message,
+          {
+            correlation_id: makeCorrelationId(ctx),
+            action_type: 'mediation_intake_confirm'
+          }
+        );
+        await sendReplyWithRetry(
+          ctx,
+          step.question,
+          {
+            correlation_id: makeCorrelationId(ctx),
+            action_type: 'mediation_intake_confirm'
+          }
+        );
+      } else {
+        await sendReplyWithRetry(
+          ctx,
+          'Не получилось сохранить этот шаг. Давайте продолжим.',
+          {
+            correlation_id: makeCorrelationId(ctx),
+            action_type: 'mediation_intake_confirm'
+          }
+        );
+        await sendReplyWithRetry(
+          ctx,
+          step.question,
+          {
+            correlation_id: makeCorrelationId(ctx),
+            action_type: 'mediation_intake_confirm'
+          }
+        );
+      }
     }
   });
 
@@ -2258,7 +2879,7 @@ export const buildTelegramBot = (
       pendingInput.set(telegramUserId, 'CREATE_TOPIC');
       await sendReplyWithRetry(
         ctx,
-        'О чём хотите договориться? Опиши коротко.',
+        'О чём хотите договориться? Опишите коротко.',
         {
           correlation_id: makeCorrelationId(ctx),
           action_type: 'create_topic_prompt'
@@ -2329,7 +2950,7 @@ export const buildTelegramBot = (
       );
       await sendReplyWithRetry(
         ctx,
-        'Спасибо. Зафиксировал.',
+        'Принял. Двигаемся к решению.',
         {
           correlation_id: makeCorrelationId(ctx),
           action_type: 'synthesis_ack'
@@ -2825,11 +3446,16 @@ export const buildTelegramBot = (
       return;
     }
 
-    const pendingMediationSession = pendingMediationIntakeSession.get(telegramUserId);
+    const activeIntakeState = await findActiveIntakeState(telegramUserId);
+    const pendingMediationSession = activeIntakeState?.sessionId ?? pendingMediationIntakeSession.get(telegramUserId);
     if (pendingMediationSession) {
+      // If user types new text while in CONFIRM state, treat it as a corrected answer
+      // and let it fall through to normal intake text processing below.
       const input = text.trim();
       if (!input) {
-        const stepId = pendingMediationIntakeStep.get(telegramUserId);
+        const stepId =
+          (activeIntakeState?.currentQuestionKey as MediationIntakeStepId | undefined) ??
+          pendingMediationIntakeStep.get(telegramUserId);
         const question = stepId ? mediationStepById.get(stepId)?.question : null;
         await sendReplyWithRetry(
           ctx,
@@ -2843,7 +3469,9 @@ export const buildTelegramBot = (
       }
 
       try {
-        let stepId = pendingMediationIntakeStep.get(telegramUserId);
+        let stepId =
+          (activeIntakeState?.currentQuestionKey as MediationIntakeStepId | undefined) ??
+          pendingMediationIntakeStep.get(telegramUserId);
         if (!stepId) {
           const view = await gateway.getIntakeProgress(pendingMediationSession, telegramUserId);
           stepId = findNextMediationIntakeStep(view.fields)?.id;
@@ -2852,7 +3480,7 @@ export const buildTelegramBot = (
         if (!stepId) {
           await sendReplyWithRetry(
             ctx,
-            'Спасибо, ваша часть уже собрана. Ждём второго человека.',
+            'Готово. Я услышал вас.\nКак только второй участник завершит свою часть — мы пойдём дальше.',
             {
               correlation_id: makeCorrelationId(ctx),
               action_type: 'mediation_intake_answer'
@@ -2864,27 +3492,115 @@ export const buildTelegramBot = (
           return;
         }
 
-        const step = mediationStepById.get(stepId)!;
-        pendingMediationIntakeDraft.set(telegramUserId, {
-          sessionId: pendingMediationSession,
-          stepId,
-          text: input
+        // Conversational intake dialog
+        const historyKey = `${pendingMediationSession}:${telegramUserId}`;
+        const history = intakeConversationHistory.get(historyKey) ?? [];
+
+        const intakeProgress = await gateway.getIntakeProgress(pendingMediationSession, telegramUserId);
+        const collectedFields: Partial<Record<string, string>> = {};
+        for (const [field, entry] of Object.entries(intakeProgress.fields)) {
+          if ((entry as { rawValue: string | null }).rawValue) {
+            collectedFields[field] = (entry as { rawValue: string }).rawValue;
+          }
+        }
+
+        let topic = 'Договорённость';
+        try {
+          const sessionStatus = await gateway.getSessionStatus(pendingMediationSession, telegramUserId);
+          topic = sessionStatus.problemTopic ?? topic;
+        } catch { /* ignore */ }
+
+        const dialogResult = await dialogManager.processTurn({
+          topic,
+          history,
+          collectedFields,
+          latestUserMessage: input
         });
 
-        await sendReplyWithRetry(
-          ctx,
-          [step.confirmPrefix, input, 'Я понял правильно?'].join('\n'),
-          {
-            correlation_id: makeCorrelationId(ctx),
-            action_type: 'mediation_intake_answer'
-          },
-          { reply_markup: mediationIntakeConfirmationKeyboard(pendingMediationSession, stepId) }
-        );
+        // Update history
+        history.push({ role: 'user', text: input });
+        history.push({ role: 'assistant', text: dialogResult.reply });
+        intakeConversationHistory.set(historyKey, history);
+
+        // Submit extracted fields
+        if (Object.keys(dialogResult.extractedFields).length > 0) {
+          const answers: StructuredIntakeAnswerInput[] = [];
+          for (const [field, value] of Object.entries(dialogResult.extractedFields)) {
+            if (value) answers.push({ field: field as IntakeField, value });
+          }
+          // Derive boundaries from constraints if not explicitly extracted
+          if (dialogResult.extractedFields.constraints && !dialogResult.extractedFields.boundaries) {
+            answers.push({ field: 'boundaries', value: dialogResult.extractedFields.constraints });
+          }
+          // Derive non_negotiables when complete
+          if (dialogResult.isComplete) {
+            const constraintVal = dialogResult.extractedFields.constraints
+              ?? intakeProgress.fields.constraints?.rawValue?.trim()
+              ?? null;
+            if (constraintVal) {
+              answers.push({ field: 'non_negotiables', value: constraintVal });
+            }
+          }
+          const idempotencyKey = `tg:dialog_intake:${pendingMediationSession}:${telegramUserId}:${history.length}`;
+          await gateway.submitIntakeAnswers(
+            {
+              correlation_id: makeCorrelationId(ctx),
+              channel: 'TELEGRAM',
+              idempotency_key: idempotencyKey,
+              action_type: 'mediation_intake_confirm',
+              case_id: pendingMediationSession,
+              participant_id: telegramUserId,
+              payload: { session_id: pendingMediationSession, text: input }
+            },
+            pendingMediationSession,
+            telegramUserId,
+            answers
+          );
+        }
+
+        pendingMediationIntakeDraft.delete(telegramUserId);
+
+        // Send dialog reply
+        await sendReplyWithRetry(ctx, dialogResult.reply, {
+          correlation_id: makeCorrelationId(ctx),
+          action_type: 'mediation_intake_answer'
+        });
+
+        // If complete, trigger completion check; otherwise update conversation state
+        if (dialogResult.isComplete) {
+          intakeConversationHistory.delete(historyKey);
+          await askNextMediationIntakeQuestion(telegramUserId, pendingMediationSession, 'current', ctx);
+        } else {
+          // Update conversation state to reflect next expected step
+          const updatedProgress = await gateway.getIntakeProgress(pendingMediationSession, telegramUserId);
+          const nextStep = findNextMediationIntakeStep(updatedProgress.fields);
+          if (nextStep) {
+            pendingMediationIntakeSession.set(telegramUserId, pendingMediationSession);
+            pendingMediationIntakeStep.set(telegramUserId, nextStep.id);
+            await upsertConversationState({
+              sessionId: pendingMediationSession,
+              telegramUserId,
+              currentStage: ConversationStages.INTAKE,
+              currentQuestionKey: nextStep.id,
+              expectedInputType: ConversationExpectedInputTypes.TEXT,
+              currentDraft: null,
+              committedFields: committedConversationFields(updatedProgress.fields),
+              pendingAction: null,
+              lastEventId: ctx.update.update_id,
+              lastInboundEvent: 'intake_answer',
+              lastOutboundAction: 'mediation_intake_answer'
+            });
+          }
+        }
         return;
       } catch (error) {
+        const validationMessage =
+          error instanceof DomainError && error.code === 'INTAKE_VALIDATION_ERROR'
+            ? 'Опишите чуть подробнее, что происходит'
+            : mapTelegramErrorText(error);
         await sendReplyWithRetry(
           ctx,
-          mapTelegramErrorText(error),
+          validationMessage,
           {
             correlation_id: makeCorrelationId(ctx),
             action_type: 'mediation_intake_answer'
@@ -2913,16 +3629,12 @@ export const buildTelegramBot = (
         return;
       }
 
-      pendingCreateTopicDraft.set(telegramUserId, { topic });
-      await sendReplyWithRetry(
-        ctx,
-        ['Я понял так:', `«${topic}»`, '', 'Это то, что вы хотите обсудить?'].join('\n'),
-        {
-          correlation_id: makeCorrelationId(ctx),
-          action_type: 'create_topic_draft'
-        },
-        { reply_markup: createTopicDraftKeyboard() }
-      );
+      const initiatorName = (ctx.from?.first_name ?? 'Кто-то').replace(/\s+/g, ' ').trim();
+      const created = await createSessionFlow(ctx, telegramUserId, topic, initiatorName || 'Кто-то');
+      if (created) {
+        pendingInput.delete(telegramUserId);
+        pendingCreateTopicDraft.delete(telegramUserId);
+      }
       return;
     }
 
@@ -2961,6 +3673,23 @@ export const buildTelegramBot = (
       });
     }
   );
+
+  bot.catch(async (err) => {
+    const ctx = err.ctx;
+    logger.error(
+      {
+        error: err.error instanceof Error ? err.error.message : String(err.error),
+        update_id: ctx.update.update_id,
+        telegram_user_id: userIdFromCtx(ctx)
+      },
+      'telegram.unhandled.error'
+    );
+    try {
+      await ctx.reply('Что-то пошло не так. Нажмите /start, чтобы продолжить.');
+    } catch {
+      // ignore send failure
+    }
+  });
 
   return bot;
 };

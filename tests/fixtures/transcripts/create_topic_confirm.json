@@ -2,6 +2,5 @@
   {"type":"command","updateId":1001,"userId":101,"text":"/start"},
   {"type":"callback","updateId":1002,"userId":101,"data":"menu:begin"},
   {"type":"callback","updateId":1003,"userId":101,"data":"menu:create"},
-  {"type":"text","updateId":1004,"userId":101,"text":"График уборки"},
-  {"type":"callback","updateId":1005,"userId":101,"data":"create_topic:confirm_draft"}
+  {"type":"text","updateId":1004,"userId":101,"text":"График уборки"}
 ]

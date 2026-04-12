@@ -383,7 +383,7 @@ const sendTelegramCallback = async (
 };
 
 describe('transport adapters', () => {
-  it('shows concise welcome with begin button, then guided action menu', async () => {
+  it('shows concise welcome with action menu', async () => {
     const setup = await setupTransport();
 
     await sendTelegramCommand(setup.bot, 50, 101, '/start');
@@ -391,16 +391,9 @@ describe('transport adapters', () => {
     const welcome = setup.sentPayloads[setup.sentPayloads.length - 1];
     expect(welcome.text).toContain('Привет.');
     expect(welcome.text).toContain('Как это работает:');
-    expect(welcome.text).toContain('Готовы начать?');
-    expect(JSON.stringify(welcome.reply_markup)).toContain('menu:begin');
-
-    await sendTelegramCallback(setup.bot, 51, 101, 'menu:begin');
-
-    const menu = setup.sentPayloads[setup.sentPayloads.length - 1];
-    expect(menu.text).toContain('Что вы хотите сделать?');
-    expect(JSON.stringify(menu.reply_markup)).toContain('menu:create');
-    expect(JSON.stringify(menu.reply_markup)).toContain('menu:join');
-    expect(JSON.stringify(menu.reply_markup)).toContain('menu:status');
+    expect(JSON.stringify(welcome.reply_markup)).toContain('menu:create');
+    expect(JSON.stringify(welcome.reply_markup)).toContain('menu:join');
+    expect(JSON.stringify(welcome.reply_markup)).toContain('menu:status');
   });
 
   it('supports create -> deep-link join -> consent flow via UX buttons and start payload', async () => {
@@ -502,7 +495,7 @@ describe('transport adapters', () => {
     });
 
     await sendTelegramCallback(bot, 60, 101, 'menu:create');
-    expect(replies[replies.length - 1]).toContain('О чём хотите договориться? Опиши коротко.');
+    expect(replies[replies.length - 1]).toContain('О чём хотите договориться? Опишите коротко.');
     await sendTelegramText(bot, 61, 101, 'Сроки и оплата за проект');
     expect(replies[replies.length - 1]).toContain('Я понял так:');
     expect(replies[replies.length - 1]).toContain('Это то, что вы хотите обсудить?');
@@ -542,18 +535,17 @@ describe('transport adapters', () => {
 
     await sendTelegramCallback(bot, 65, 102, `consent:${sessionId}`);
     expect(replies.some((entry) => entry.includes('Готово. Вы оба подтвердили участие'))).toBe(true);
-    expect(replies[replies.length - 1]).toContain('Важно:');
-    expect(replies[replies.length - 1]).toContain('Что конкретно сейчас происходит?');
+    expect(replies[replies.length - 1]).toContain('Чтобы зафиксировать базу: что конкретно сейчас происходит?');
+    expect(replies[replies.length - 1]).toContain('Опишите ситуацию как есть, своими словами.');
 
     await sendTelegramText(bot, 66, 101, 'Хотим договориться о дедлайнах и оплате');
-    expect(replies[replies.length - 1]).toContain('Я понял так:');
-    expect(replies[replies.length - 1]).toContain('Я понял правильно?');
+    expect(replies[replies.length - 1]).toContain('Я фиксирую ваш смысл');
     await sendTelegramCallback(bot, 67, 101, `intake:edit:${sessionId}:situation_facts`);
     expect(replies[replies.length - 1]).toContain('Отправьте исправленный вариант.');
     await sendTelegramText(bot, 68, 101, 'Хотим договориться о дедлайнах и формате оплаты');
-    expect(replies[replies.length - 1]).toContain('Я понял так:');
+    expect(replies[replies.length - 1]).toContain('Я фиксирую ваш смысл');
     await sendTelegramCallback(bot, 69, 101, `intake:confirm:${sessionId}:situation_facts`);
-    expect(replies[replies.length - 1]).toContain('Что в этой ситуации больше всего напрягает?');
+    expect(replies[replies.length - 1]).toContain('Что в этой ситуации задевает вас сильнее всего?');
 
     const partyAFlow: Array<{
       updateId: number;
@@ -573,10 +565,10 @@ describe('transport adapters', () => {
     ];
     for (const entry of partyAFlow) {
       await sendTelegramText(bot, entry.updateId, 101, entry.text);
-      expect(replies[replies.length - 1]).toContain('Я понял правильно?');
+      expect(replies[replies.length - 1]).toContain('Я фиксирую ваш смысл');
       await sendTelegramCallback(bot, entry.updateId + 100, 101, `intake:confirm:${sessionId}:${entry.stepId}`);
     }
-    expect(replies[replies.length - 1]).toContain('Сейчас ждём второго человека.');
+    expect(replies[replies.length - 1]).toContain('Готово. Я услышал вас.');
 
     const partyBFlow: Array<{
       updateId: number;
@@ -598,7 +590,7 @@ describe('transport adapters', () => {
     ];
     for (const entry of partyBFlow) {
       await sendTelegramText(bot, entry.updateId, 102, entry.text);
-      expect(replies[replies.length - 1]).toContain('Я понял правильно?');
+      expect(replies[replies.length - 1]).toContain('Я фиксирую ваш смысл');
       await sendTelegramCallback(bot, entry.updateId + 100, 102, `intake:confirm:${sessionId}:${entry.stepId}`);
     }
 
@@ -730,7 +722,7 @@ describe('transport adapters', () => {
     };
 
     await sendTelegramCallback(setup.bot, 80, 101, 'menu:create');
-    expect(setup.replies[setup.replies.length - 1]).toContain('О чём хотите договориться? Опиши коротко.');
+    expect(setup.replies[setup.replies.length - 1]).toContain('О чём хотите договориться? Опишите коротко.');
 
     await sendTelegramText(setup.bot, 81, 101, 'Сроки и оплата');
     expect(setup.replies[setup.replies.length - 1]).toContain('Я понял так:');

@@ -21,8 +21,10 @@ import { InMemoryProtocolTrackingRepository } from '../../../src/infrastructure/
 import { InMemorySessionEvaluationRepository } from '../../../src/infrastructure/repositories/InMemorySessionEvaluationRepository.js';
 import { InMemorySessionRepository } from '../../../src/infrastructure/repositories/InMemorySessionRepository.js';
 import { InMemorySynthesisReviewRepository } from '../../../src/infrastructure/repositories/InMemorySynthesisReviewRepository.js';
+import { InMemoryConversationStateRepository } from '../../../src/infrastructure/repositories/InMemoryConversationStateRepository.js';
 import { buildTelegramBot } from '../../../src/infrastructure/telegram/bot.js';
 import { InMemoryRateLimiter } from '../../../src/infrastructure/transport/rateLimiter.js';
+import { DeterministicIntakeDialogManager } from '../../../src/infrastructure/llm/DeterministicIntakeDialogManager.js';
 
 class MutableClock implements Clock {
   constructor(private value: Date) {}
@@ -83,10 +85,12 @@ export interface TelegramTranscriptHarness {
   bot: Bot;
   gateway: ProtocolGatewayService;
   logger: CaptureLogger;
-  sentMessages: Array<{ chatId: number; text: string; replyMarkupJson: string }>;
+  sentMessages: Array<{ chatId: number; text: string; replyMarkupJson: string; parseMode: string | null }>;
   runStep: (step: TranscriptStep, expected?: StepExpectations) => Promise<void>;
   replayTranscript: (steps: TranscriptStep[]) => Promise<void>;
   extractLastInviteToken: () => string;
+  restartTransport: () => Promise<void>;
+  conversationStateRepository: InMemoryConversationStateRepository;
 }
 
 const findLast = <T>(items: T[], predicate: (item: T) => boolean): T | undefined => {
@@ -164,6 +168,7 @@ export const createTelegramTranscriptHarness = async (): Promise<TelegramTranscr
   const issueRepo = new InMemoryIssueResolutionRepository();
   const draftRepo = new InMemoryDraftAgreementRepository();
   const sessionEvaluationRepo = new InMemorySessionEvaluationRepository();
+  const conversationStateRepository = new InMemoryConversationStateRepository();
 
   const mediationService = new MediationService(sessionRepo, clock, ids);
   const intakeService = new IntakeService(
@@ -215,53 +220,60 @@ export const createTelegramTranscriptHarness = async (): Promise<TelegramTranscr
     sessionEvaluationRepo
   );
 
-  const bot = buildTelegramBot('test-token', gateway, {
-    logger,
-    rate_limiter: new InMemoryRateLimiter(clock),
-    max_send_attempts: 3,
-    base_backoff_ms: 1,
-    sleep: async () => undefined
-  });
-  (bot as Bot).botInfo = {
-    id: 1,
-    is_bot: true,
-    first_name: 'Ladno',
-    username: 'ladno_bot',
-    can_join_groups: false,
-    can_read_all_group_messages: false,
-    supports_inline_queries: false
+  const sentMessages: Array<{ chatId: number; text: string; replyMarkupJson: string; parseMode: string | null }> = [];
+  const createConfiguredBot = (): Bot => {
+    const configured = buildTelegramBot('test-token', gateway, {
+      logger,
+      rate_limiter: new InMemoryRateLimiter(clock),
+      max_send_attempts: 3,
+      base_backoff_ms: 1,
+      sleep: async () => undefined,
+      conversation_state_repository: conversationStateRepository,
+      intake_dialog_manager: new DeterministicIntakeDialogManager()
+    });
+    configured.botInfo = {
+      id: 1,
+      is_bot: true,
+      first_name: 'Ladno',
+      username: 'ladno_bot',
+      can_join_groups: false,
+      can_read_all_group_messages: false,
+      supports_inline_queries: false
+    };
+    configured.api.config.use(async (prev, method, payload, signal) => {
+      if (method === 'sendMessage') {
+        sentMessages.push({
+          chatId: Number((payload as { chat_id: number }).chat_id),
+          text: (payload as { text?: string }).text ?? '',
+          replyMarkupJson: JSON.stringify((payload as { reply_markup?: unknown }).reply_markup ?? {}),
+          parseMode: (payload as { parse_mode?: string }).parse_mode ?? null
+        });
+        return {
+          ok: true,
+          result: {
+            message_id: sentMessages.length,
+            date: 0,
+            chat: { id: (payload as { chat_id: number }).chat_id, type: 'private' },
+            text: (payload as { text?: string }).text ?? ''
+          }
+        } as never;
+      }
+
+      return prev(method, payload, signal);
+    });
+    return configured;
   };
 
-  const sentMessages: Array<{ chatId: number; text: string; replyMarkupJson: string }> = [];
-  bot.api.config.use(async (prev, method, payload, signal) => {
-    if (method === 'sendMessage') {
-      sentMessages.push({
-        chatId: Number((payload as { chat_id: number }).chat_id),
-        text: (payload as { text?: string }).text ?? '',
-        replyMarkupJson: JSON.stringify((payload as { reply_markup?: unknown }).reply_markup ?? {})
-      });
-      return {
-        ok: true,
-        result: {
-          message_id: sentMessages.length,
-          date: 0,
-          chat: { id: (payload as { chat_id: number }).chat_id, type: 'private' },
-          text: (payload as { text?: string }).text ?? ''
-        }
-      } as never;
-    }
-
-    return prev(method, payload, signal);
-  });
+  let activeBot = createConfiguredBot();
 
   const runStep = async (step: TranscriptStep, expected?: StepExpectations) => {
     const beforeCount = sentMessages.length;
     if (step.type === 'command') {
-      await sendCommand(bot, step.updateId, step.userId, step.text);
+      await sendCommand(activeBot, step.updateId, step.userId, step.text);
     } else if (step.type === 'text') {
-      await sendText(bot, step.updateId, step.userId, step.text);
+      await sendText(activeBot, step.updateId, step.userId, step.text);
     } else {
-      await sendCallback(bot, step.updateId, step.userId, step.data);
+      await sendCallback(activeBot, step.updateId, step.userId, step.data);
     }
 
     if (!expected) {
@@ -332,13 +344,21 @@ export const createTelegramTranscriptHarness = async (): Promise<TelegramTranscr
     return match[1];
   };
 
+  const restartTransport = async () => {
+    activeBot = createConfiguredBot();
+  };
+
   return {
-    bot,
+    get bot() {
+      return activeBot;
+    },
     gateway,
     logger,
     sentMessages,
     runStep,
     replayTranscript,
-    extractLastInviteToken
+    extractLastInviteToken,
+    restartTransport,
+    conversationStateRepository
   };
 };
