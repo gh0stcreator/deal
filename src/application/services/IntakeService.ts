@@ -1,8 +1,9 @@
 import { Clock } from '../ports/Clock.js';
 import { IdGenerator } from '../ports/IdGenerator.js';
-import { IntakeNormalizer } from '../ports/IntakeNormalizer.js';
+import { IntakeNormalizationResult, IntakeNormalizer } from '../ports/IntakeNormalizer.js';
 import { IntakeRepository } from '../ports/IntakeRepository.js';
 import { SessionRepository } from '../ports/SessionRepository.js';
+import { mediatorSystemPrompt } from '../../infrastructure/llm/prompts/mediatorSystemPrompt.js';
 import {
   IntakeAccessDeniedError,
   IntakeNotFoundError,
@@ -61,6 +62,12 @@ export interface PrivateIntakeData {
 }
 
 export class IntakeService {
+  private static readonly DRAFT_PREFIX = '[intake_draft:';
+  private static readonly INTAKE_PROMPT_CONTEXT = {
+    systemPrompt: mediatorSystemPrompt,
+    stage: 'intake' as const
+  };
+
   constructor(
     private readonly sessionRepository: SessionRepository,
     private readonly intakeRepository: IntakeRepository,
@@ -131,7 +138,17 @@ export class IntakeService {
 
     this.ensureFieldOrdering(intake, input.field);
 
-    const normalizedValue = await this.normalizer.normalizeField(input.field, input.rawValue);
+    const normalization = await this.normalizer.normalizeField(
+      input.field,
+      input.rawValue,
+      IntakeService.INTAKE_PROMPT_CONTEXT
+    );
+    if (normalization.needsClarification) {
+      throw new IntakeValidationError(
+        normalization.reflection?.trim() || 'Опишите чуть подробнее, чтобы я зафиксировал этот шаг.'
+      );
+    }
+    const normalizedValue = normalization.extractedValue;
 
     const next =
       intake.state === IntakeStates.SUMMARY_PENDING_CONFIRMATION
@@ -141,7 +158,10 @@ export class IntakeService {
     let persisted = next;
 
     if (next.state === IntakeStates.SUMMARY_PENDING_CONFIRMATION) {
-      const summary = await this.normalizer.generateSummary(next.normalizedPositionModel!);
+      const summary = await this.normalizer.generateSummary(
+        next.normalizedPositionModel!,
+        IntakeService.INTAKE_PROMPT_CONTEXT
+      );
       persisted = setSummaryPendingConfirmation(next, summary, now);
     }
 
@@ -174,6 +194,29 @@ export class IntakeService {
     return this.toView(persisted);
   }
 
+  async previewFieldNormalization(input: {
+    sessionId: string;
+    telegramUserId: string;
+    field: IntakeField;
+    rawValue: string;
+    questionText?: string;
+  }): Promise<IntakeNormalizationResult> {
+    await this.requireParticipant(input.sessionId, input.telegramUserId);
+    const normalization = await this.normalizer.normalizeField(
+      input.field,
+      input.rawValue,
+      {
+        ...IntakeService.INTAKE_PROMPT_CONTEXT,
+        questionText: input.questionText
+      }
+    );
+    return {
+      reflection: normalization.reflection?.trim() || 'Слышу вас. Я правильно понял суть?',
+      extractedValue: normalization.extractedValue?.trim() ?? '',
+      needsClarification: normalization.needsClarification
+    };
+  }
+
   async regenerateSummary(input: {
     sessionId: string;
     telegramUserId: string;
@@ -186,7 +229,10 @@ export class IntakeService {
       throw new IntakeValidationError('Cannot generate summary before all required fields are completed.');
     }
 
-    const summary = await this.normalizer.generateSummary(intake.normalizedPositionModel);
+    const summary = await this.normalizer.generateSummary(
+      intake.normalizedPositionModel,
+      IntakeService.INTAKE_PROMPT_CONTEXT
+    );
     const updated = setSummaryPendingConfirmation(intake, summary, this.clock.now());
 
     await this.intakeRepository.save(updated, { expectedVersion: input.expectedVersion });
@@ -264,6 +310,52 @@ export class IntakeService {
       content: `[problem_synthesis_clarification] ${content}`,
       createdAt: this.clock.now()
     });
+  }
+
+  async savePrivateIntakeDraft(input: {
+    sessionId: string;
+    telegramUserId: string;
+    field: IntakeField;
+    value: string;
+  }): Promise<void> {
+    const { participant } = await this.requireParticipant(input.sessionId, input.telegramUserId);
+    const intake = await this.requireIntake(participant.id);
+    const content = input.value.trim();
+    if (!content) {
+      throw new IntakeValidationError('Intake draft cannot be empty.');
+    }
+
+    await this.intakeRepository.saveRawMessage({
+      id: this.idGenerator.nextId(),
+      intakeId: intake.id,
+      participantId: participant.id,
+      field: input.field,
+      content: `${IntakeService.DRAFT_PREFIX}${input.field}] ${content}`,
+      createdAt: this.clock.now()
+    });
+  }
+
+  async getLatestPrivateIntakeDraft(input: {
+    sessionId: string;
+    telegramUserId: string;
+    field: IntakeField;
+  }): Promise<string | null> {
+    const { participant } = await this.requireParticipant(input.sessionId, input.telegramUserId);
+    const intake = await this.requireIntake(participant.id);
+    const messages = await this.intakeRepository.findRawMessages(intake.id, participant.id);
+    const prefix = `${IntakeService.DRAFT_PREFIX}${input.field}] `;
+
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (typeof message.content !== 'string') {
+        continue;
+      }
+      if (message.content.startsWith(prefix)) {
+        return message.content.slice(prefix.length).trim() || null;
+      }
+    }
+
+    return null;
   }
 
   private async requireParticipant(

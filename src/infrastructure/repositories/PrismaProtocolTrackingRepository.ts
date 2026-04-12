@@ -20,8 +20,12 @@ const toPrismaChannel = (channel: TransportChannel): PrismaTransportChannel =>
 const toPrismaOutcome = (outcome: ProtocolEventOutcome): PrismaProtocolEventOutcome =>
   outcome as PrismaProtocolEventOutcome;
 
-const toPrismaSessionState = (state: SessionState | null): PrismaSessionState | null =>
-  state ? (state as PrismaSessionState) : null;
+const VALID_SESSION_STATES = new Set<string>(Object.values(PrismaSessionState));
+
+const toPrismaSessionState = (state: SessionState | null): PrismaSessionState | null => {
+  if (!state || !VALID_SESSION_STATES.has(state)) return null;
+  return state as PrismaSessionState;
+};
 
 export class PrismaProtocolTrackingRepository implements ProtocolTrackingRepository {
   constructor(private readonly prisma: PrismaClient) {}

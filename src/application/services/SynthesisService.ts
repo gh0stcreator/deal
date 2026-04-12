@@ -4,6 +4,7 @@ import { IntakeRepository } from '../ports/IntakeRepository.js';
 import { MediationSummaryRepository } from '../ports/MediationSummaryRepository.js';
 import { SessionRepository } from '../ports/SessionRepository.js';
 import { SynthesisMapper } from '../ports/SynthesisMapper.js';
+import { mediatorSystemPrompt } from '../../infrastructure/llm/prompts/mediatorSystemPrompt.js';
 import { IntakeFieldOrder, IntakeStates, NormalizedPositionModel } from '../../domain/intake/types.js';
 import { SessionNotFoundError } from '../../domain/session/errors.js';
 import {
@@ -15,6 +16,11 @@ import { SynthesisPreconditionError } from '../../domain/synthesis/errors.js';
 import { MediationSummary } from '../../domain/synthesis/types.js';
 
 export class SynthesisService {
+  private static readonly SYNTHESIS_PROMPT_CONTEXT = {
+    systemPrompt: mediatorSystemPrompt,
+    stage: 'synthesis' as const
+  };
+
   constructor(
     private readonly sessionRepository: SessionRepository,
     private readonly intakeRepository: IntakeRepository,
@@ -57,7 +63,10 @@ export class SynthesisService {
       partyB: this.alignModel(partyB.normalizedPositionModel!)
     };
 
-    const structured = await this.mapper.synthesize(aligned);
+    const structured = await this.mapper.synthesize(
+      aligned,
+      SynthesisService.SYNTHESIS_PROMPT_CONTEXT
+    );
 
     const latest = await this.summaryRepository.findLatestByCaseId(sessionId);
     const summary: MediationSummary = {

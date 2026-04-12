@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { Clock, SystemClock } from '../../application/ports/Clock.js';
 import { AppLogger, createNoopLogger } from '../../application/ports/AppLogger.js';
 import { ProtocolGatewayService } from '../../application/services/ProtocolGatewayService.js';
+import { ConversationStateRepository } from '../../application/ports/ConversationStateRepository.js';
 import { ProposalVariantTypes } from '../../domain/proposal/types.js';
 import { SuggestEditOperations } from '../../domain/negotiation/types.js';
 import { sendHttpError } from '../transport/errorMapping.js';
@@ -62,11 +63,13 @@ export interface HttpServerOptions {
   logger?: AppLogger;
   rate_limiter?: InMemoryRateLimiter;
   clock?: Clock;
+  conversation_state_repository?: ConversationStateRepository;
 }
 
 export const buildHttpServer = (gateway: ProtocolGatewayService, options: HttpServerOptions = {}) => {
   const logger = options.logger ?? createNoopLogger();
   const rateLimiter = options.rate_limiter ?? new InMemoryRateLimiter(options.clock ?? new SystemClock());
+  const conversationStateRepository = options.conversation_state_repository;
   const app = Fastify({ logger: false });
 
   app.register(sensible);
@@ -116,6 +119,38 @@ export const buildHttpServer = (gateway: ProtocolGatewayService, options: HttpSe
   };
 
   app.get('/health', async () => ({ status: 'ok' }));
+
+  app.get('/sessions/:sessionId/conversation-debug', async (request, reply) => {
+    try {
+      if (!conversationStateRepository) {
+        return reply.code(501).send({
+          code: 'CONVERSATION_DEBUG_NOT_CONFIGURED',
+          message: 'Conversation state repository is not configured.'
+        });
+      }
+      const params = z.object({ sessionId: z.string().min(1) }).parse(request.params);
+      const records = await conversationStateRepository.listBySession(params.sessionId);
+      return reply.send({
+        session_id: params.sessionId,
+        participants: records.map((entry) => ({
+          telegram_user_id: entry.telegramUserId,
+          current_stage: entry.currentStage,
+          current_question_key: entry.currentQuestionKey,
+          expected_input_type: entry.expectedInputType,
+          current_draft: entry.currentDraft,
+          committed_fields: entry.committedFields,
+          pending_action: entry.pendingAction,
+          last_event_id: entry.lastEventId,
+          last_error_code: entry.lastErrorCode,
+          last_inbound_event: entry.lastInboundEvent,
+          last_outbound_action: entry.lastOutboundAction,
+          updated_at: entry.updatedAt
+        }))
+      });
+    } catch (error) {
+      return sendHttpError(error, reply);
+    }
+  });
 
   app.post('/sessions/create', async (request, reply) => {
     try {

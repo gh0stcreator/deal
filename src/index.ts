@@ -1,7 +1,6 @@
 import { loadEnv } from './config/env.js';
 import { SystemClock } from './application/ports/Clock.js';
 import { RandomIdGenerator } from './application/ports/IdGenerator.js';
-import { DeterministicIntakeNormalizer } from './application/ports/IntakeNormalizer.js';
 import { MediationService } from './application/services/MediationService.js';
 import { IntakeService } from './application/services/IntakeService.js';
 import { SynthesisService } from './application/services/SynthesisService.js';
@@ -24,7 +23,9 @@ import { PrismaSynthesisReviewRepository } from './infrastructure/repositories/P
 import { PrismaIssueResolutionRepository } from './infrastructure/repositories/PrismaIssueResolutionRepository.js';
 import { PrismaDraftAgreementRepository } from './infrastructure/repositories/PrismaDraftAgreementRepository.js';
 import { PrismaSessionEvaluationRepository } from './infrastructure/repositories/PrismaSessionEvaluationRepository.js';
+import { PrismaConversationStateRepository } from './infrastructure/repositories/PrismaConversationStateRepository.js';
 import { buildTelegramBot } from './infrastructure/telegram/bot.js';
+import { LlmIntakeNormalizer } from './infrastructure/llm/LlmIntakeNormalizer.js';
 
 const bootstrap = async () => {
   const env = loadEnv();
@@ -32,6 +33,8 @@ const bootstrap = async () => {
   const clock = new SystemClock();
   const ids = new RandomIdGenerator();
   const rateLimiter = new InMemoryRateLimiter(clock);
+
+  await prisma.$connect();
 
   const sessionRepository = new PrismaSessionRepository(prisma);
   const intakeRepository = new PrismaIntakeRepository(prisma);
@@ -43,12 +46,13 @@ const bootstrap = async () => {
   const issueResolutionRepository = new PrismaIssueResolutionRepository(prisma);
   const draftAgreementRepository = new PrismaDraftAgreementRepository(prisma);
   const sessionEvaluationRepository = new PrismaSessionEvaluationRepository(prisma);
+  const conversationStateRepository = new PrismaConversationStateRepository(prisma);
 
   const mediationService = new MediationService(sessionRepository, clock, ids);
   const intakeService = new IntakeService(
     sessionRepository,
     intakeRepository,
-    new DeterministicIntakeNormalizer(),
+    new LlmIntakeNormalizer(),
     ids,
     clock
   );
@@ -97,7 +101,8 @@ const bootstrap = async () => {
   const app = buildHttpServer(gateway, {
     logger,
     rate_limiter: rateLimiter,
-    clock
+    clock,
+    conversation_state_repository: conversationStateRepository
   });
 
   try {
@@ -107,7 +112,9 @@ const bootstrap = async () => {
     if (env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_BOT_TOKEN !== 'replace-me') {
       const bot = buildTelegramBot(env.TELEGRAM_BOT_TOKEN, gateway, {
         logger,
-        rate_limiter: rateLimiter
+        rate_limiter: rateLimiter,
+        render_safe_mode: env.RENDER_SAFE_MODE,
+        conversation_state_repository: conversationStateRepository
       });
       await bot.start();
       logger.info('Telegram bot started');

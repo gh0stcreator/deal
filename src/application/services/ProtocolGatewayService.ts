@@ -51,6 +51,7 @@ import {
   DraftAgreementResponseTypes
 } from '../../domain/agreement/types.js';
 import { SessionEvaluation } from '../../domain/quality/types.js';
+import { mediatorSystemPrompt } from '../../infrastructure/llm/prompts/mediatorSystemPrompt.js';
 
 const RETRY_WINDOW_MS = 20_000;
 
@@ -251,6 +252,12 @@ export interface StructuredIntakeAnswerInput {
   value: string;
 }
 
+export interface IntakeReflectionPreview {
+  reflection: string;
+  extracted_value: string;
+  needs_clarification: boolean;
+}
+
 class NoopSynthesisReviewRepository implements SynthesisReviewRepository {
   async findLatestProblemSynthesis(): Promise<ProblemSynthesisSnapshot | null> {
     return null;
@@ -435,6 +442,57 @@ export class ProtocolGatewayService {
       }
 
       return view;
+    });
+  }
+
+  async previewIntakeReflection(
+    sessionId: string,
+    telegramUserId: string,
+    field: IntakeField,
+    value: string,
+    questionText?: string
+  ): Promise<IntakeReflectionPreview> {
+    await this.requireParticipant(sessionId, telegramUserId);
+    const preview = await this.intakeService.previewFieldNormalization({
+      sessionId,
+      telegramUserId,
+      field,
+      rawValue: value,
+      questionText
+    });
+
+    return {
+      reflection: preview.reflection?.trim() || 'Слышу вас. Я правильно понял суть?',
+      extracted_value: preview.extractedValue?.trim() ?? '',
+      needs_clarification: preview.needsClarification
+    };
+  }
+
+  async saveIntakeDraft(
+    sessionId: string,
+    telegramUserId: string,
+    field: IntakeField,
+    value: string
+  ): Promise<void> {
+    await this.requireParticipant(sessionId, telegramUserId);
+    await this.intakeService.savePrivateIntakeDraft({
+      sessionId,
+      telegramUserId,
+      field,
+      value
+    });
+  }
+
+  async getLatestIntakeDraft(
+    sessionId: string,
+    telegramUserId: string,
+    field: IntakeField
+  ): Promise<string | null> {
+    await this.requireParticipant(sessionId, telegramUserId);
+    return this.intakeService.getLatestPrivateIntakeDraft({
+      sessionId,
+      telegramUserId,
+      field
     });
   }
 
@@ -782,6 +840,7 @@ export class ProtocolGatewayService {
         synthesisVersion: latestSynthesis.version,
         primaryTensionPoint: latestSynthesis.divergence,
         sharedGoal: latestSynthesis.focus,
+        systemPrompt: mediatorSystemPrompt,
         sideA: {
           interest: requireNormalized(
             partyAData.view.fields.interests.normalizedValue,
@@ -1975,6 +2034,7 @@ type IssueLoopInput = {
   synthesisVersion: number;
   primaryTensionPoint: string;
   sharedGoal: string;
+  systemPrompt: string;
   sideA: {
     interest: string;
     constraint: string;
@@ -2010,6 +2070,7 @@ type DraftAgreementInput = {
 };
 
 const buildIssueResolutionLoop = (input: IssueLoopInput) => {
+  void input.systemPrompt;
   const issueThemes = unique(
     extractSynthesisThemes(
       `${input.primaryTensionPoint} ${input.sideA.outcome} ${input.sideB.outcome}`

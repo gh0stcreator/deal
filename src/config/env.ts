@@ -6,7 +6,9 @@ const envSchema = z.object({
   APP_PORT: z.coerce.number().default(3000),
   DATABASE_URL: z.string().min(1),
   TELEGRAM_BOT_TOKEN: z.string().min(1).optional(),
-  LOG_LEVEL: z.string().default('info')
+  ANTHROPIC_API_KEY: z.string().min(1).optional(),
+  LOG_LEVEL: z.string().default('info'),
+  RENDER_SAFE_MODE: z.coerce.boolean().default(false)
 });
 
 export type AppEnv = z.infer<typeof envSchema>;

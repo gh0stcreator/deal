@@ -135,6 +135,31 @@ model MediationSession {
   proposalSets      ProposalSet[]
   negotiationRounds NegotiationRound[]
   protocolEvents    ProtocolEvent[]
+  conversationStates ParticipantConversationState[]
+}
+
+model ParticipantConversationState {
+  id                String   @id @default(cuid())
+  sessionId         String
+  telegramUserId    String
+  currentStage      String
+  currentQuestionKey String?
+  expectedInputType String
+  currentDraft      String?
+  committedFieldsJson Json
+  pendingAction     String?
+  lastEventId       Int?
+  lastErrorCode     String?
+  lastInboundEvent  String?
+  lastOutboundAction String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  session           MediationSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, telegramUserId])
+  @@index([telegramUserId])
+  @@index([sessionId])
 }
 
 model SessionEvaluation {
