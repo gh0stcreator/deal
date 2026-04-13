@@ -1,4 +1,4 @@
-import { Bot } from 'grammy';
+import { Bot, InlineKeyboard } from 'grammy';
 import { mapTelegramErrorText } from '../../transport/errorMapping.js';
 import {
   mapIntakeStatusView,
@@ -8,7 +8,7 @@ import {
 import { parseArgs, userIdFromCtx, makeCorrelationId, makeKey, variantValues, operationValues, extractInviteToken } from '../helpers.js';
 import { GENERAL_ACTION_LIMIT } from '../constants.js';
 import { renderIntake, renderProposalList, renderNegotiation } from '../renderers.js';
-import { startKeyboard, buildResumeKeyboard } from '../keyboards.js';
+import { startKeyboard, buildResumeKeyboard, truncateTopicLabel } from '../keyboards.js';
 import { sendReplyWithRetry, enforceRateLimit, requireArgCount } from '../transport.js';
 import { findActiveIntakeState } from '../conversationState.js';
 import { joinWithToken, giveConsentFlow } from '../flows/sessionFlow.js';
@@ -107,20 +107,91 @@ export const registerCommandHandlers = (bot: Bot, deps: BotDeps): void => {
     );
   });
 
-  bot.command('create_session', async (ctx) => {
+  // /new — shortcut for "Создать новую"
+  for (const cmd of ['new', 'create_session'] as const) {
+    bot.command(cmd, async (ctx) => {
+      const telegramUserId = userIdFromCtx(ctx);
+      deps.pendingInput.set(telegramUserId, 'CREATE_TOPIC');
+      deps.pendingCreateTopicDraft.delete(telegramUserId);
+      await sendReplyWithRetry(
+        ctx,
+        'О чём хотите договориться? Опишите коротко.',
+        { correlation_id: makeCorrelationId(ctx), action_type: 'create_topic_prompt' },
+        undefined,
+        deps
+      );
+    });
+  }
+
+  // /sessions — shortcut for "Мои договорённости"
+  bot.command('sessions', async (ctx) => {
     const telegramUserId = userIdFromCtx(ctx);
-    deps.pendingInput.set(telegramUserId, 'CREATE_TOPIC');
-    deps.pendingCreateTopicDraft.delete(telegramUserId);
-    await sendReplyWithRetry(
-      ctx,
-      'О чём хотите договориться? Опишите коротко.',
-      {
-        correlation_id: makeCorrelationId(ctx),
-        action_type: 'create_topic_prompt'
-      },
-      undefined,
-      deps
-    );
+    const correlationId = makeCorrelationId(ctx);
+    try {
+      const sessions = await deps.gateway.getUserSessions(telegramUserId);
+      if (sessions.length === 0) {
+        await sendReplyWithRetry(
+          ctx,
+          'У вас пока нет договорённостей.',
+          { correlation_id: correlationId, action_type: 'my_sessions' },
+          { reply_markup: new InlineKeyboard().text('Создать новую', 'menu:create') },
+          deps
+        );
+        return;
+      }
+      const TERMINAL = new Set(['AGREEMENT', 'PARTIAL_AGREEMENT', 'DEADLOCK', 'ABANDONED']);
+      const stateLabel = (state: string) => {
+        if (['CREATED', 'INVITED', 'BOTH_JOINED', 'CONSENT_PENDING'].includes(state)) return 'ждём второго участника';
+        if (['CONSENTED', 'SIDE_A_INTAKE', 'SIDE_B_INTAKE'].includes(state)) return 'собираем информацию';
+        if (['READY_FOR_SYNTHESIS', 'SYNTHESIS_COMPLETED'].includes(state)) return 'анализируем';
+        if (TERMINAL.has(state)) return 'завершена';
+        return 'в процессе';
+      };
+      const lines = sessions.map((s, i) => {
+        const topic = s.topic ? `«${truncateTopicLabel(s.topic, 40)}»` : 'без темы';
+        return `${i + 1}. ${topic} — ${stateLabel(s.state)}`;
+      });
+      await sendReplyWithRetry(
+        ctx,
+        ['Ваши договорённости:', '', ...lines].join('\n'),
+        { correlation_id: correlationId, action_type: 'my_sessions' },
+        undefined,
+        deps
+      );
+    } catch (error) {
+      await sendReplyWithRetry(ctx, mapTelegramErrorText(error), { correlation_id: correlationId, action_type: 'my_sessions' }, undefined, deps);
+    }
+  });
+
+  // /remind — shortcut for "Напомнить собеседнику"
+  bot.command('remind', async (ctx) => {
+    const telegramUserId = userIdFromCtx(ctx);
+    const correlationId = makeCorrelationId(ctx);
+    try {
+      const sessions = await deps.gateway.getUserSessions(telegramUserId);
+      const TERMINAL = new Set(['AGREEMENT', 'PARTIAL_AGREEMENT', 'DEADLOCK', 'ABANDONED']);
+      const active = sessions.filter((s) => !TERMINAL.has(s.state));
+      if (active.length === 0) {
+        await sendReplyWithRetry(ctx, 'Нет активных договорённостей — некому напоминать.', { correlation_id: correlationId, action_type: 'remind' }, { reply_markup: new InlineKeyboard().text('Создать новую', 'menu:create') }, deps);
+        return;
+      }
+      let sentCount = 0;
+      for (const s of active) {
+        const session = await deps.gateway.getSessionStatus(s.id, telegramUserId);
+        const other = session.participants.find((p) => p.telegramUserId !== telegramUserId);
+        if (!other) continue;
+        const topic = s.topic ? ` по теме «${truncateTopicLabel(s.topic, 40)}»` : '';
+        let text: string;
+        if (['BOTH_JOINED', 'CONSENT_PENDING'].includes(s.state)) text = `Ваш собеседник ждёт вас${topic}. Нажмите /start и подтвердите участие.`;
+        else if (['CONSENTED', 'SIDE_A_INTAKE', 'SIDE_B_INTAKE'].includes(s.state)) text = `Ваш собеседник уже рассказал о ситуации${topic}. Напишите /start — ваша очередь.`;
+        else text = `Ваш собеседник ждёт вашего ответа${topic}. Напишите /start чтобы продолжить.`;
+        await deps.bot.api.sendMessage(parseInt(other.telegramUserId, 10), text);
+        sentCount += 1;
+      }
+      await sendReplyWithRetry(ctx, sentCount > 0 ? 'Напоминание отправлено.' : 'Второй участник ещё не присоединился.', { correlation_id: correlationId, action_type: 'remind' }, undefined, deps);
+    } catch (error) {
+      await sendReplyWithRetry(ctx, mapTelegramErrorText(error), { correlation_id: correlationId, action_type: 'remind' }, undefined, deps);
+    }
   });
 
   bot.command('join_session', async (ctx) => {
