@@ -344,10 +344,7 @@ export const registerTextHandler = (bot: Bot, deps: BotDeps): void => {
           for (const [field, value] of Object.entries(dialogResult.extractedFields)) {
             if (value) answers.push({ field: field as IntakeField, value });
           }
-          // Derive boundaries from constraints if not explicitly extracted
-          if (dialogResult.extractedFields.constraints && !dialogResult.extractedFields.boundaries) {
-            answers.push({ field: 'boundaries', value: dialogResult.extractedFields.constraints });
-          }
+          // boundaries is auto-derived from constraints in the domain state machine — no separate submission needed
           // Derive non_negotiables when complete
           if (dialogResult.isComplete) {
             const constraintVal = dialogResult.extractedFields.constraints

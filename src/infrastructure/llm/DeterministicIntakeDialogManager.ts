@@ -38,14 +38,10 @@ export class DeterministicIntakeDialogManager implements IntakeDialogManager {
     }
 
     // Extract the current field from latest user message
+    // Note: boundaries is auto-derived from constraints in the domain state machine
     const extractedFields: Partial<Record<IntakeField, string>> = {
       [currentField]: input.latestUserMessage
     };
-
-    // Also include boundaries if currentField is constraints
-    if (currentField === 'constraints') {
-      extractedFields.boundaries = input.latestUserMessage;
-    }
 
     // Build reply
     const nextFieldIndex = PRIMARY_FIELDS.indexOf(currentField) + 1;

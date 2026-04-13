@@ -50,7 +50,8 @@ export const submitIntakeField = (
     throw new InvalidStateTransitionError('Raw and normalized values must be non-empty.');
   }
 
-  const updatedFields = {
+  // boundaries is always derived from constraints — keep them in sync automatically
+  const updatedFields: typeof intake.fields = {
     ...intake.fields,
     [field]: {
       ...intake.fields[field],
@@ -59,6 +60,14 @@ export const submitIntakeField = (
       updatedAt: now
     }
   };
+  if (field === 'constraints') {
+    updatedFields.boundaries = {
+      ...intake.fields.boundaries,
+      rawValue: cleanedRaw,
+      normalizedValue: cleanedNormalized,
+      updatedAt: now
+    };
+  }
 
   const allDone = areAllFieldsCompleted(updatedFields);
 

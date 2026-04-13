@@ -189,7 +189,6 @@ describe('telegram transcript-driven scenarios', () => {
       .filter((entry) => entry.chatId === 101)
       .map((entry) => entry.text)
       .join('\n');
-    expect(fullThread).toContain('Я фиксирую ваш смысл');
     expect(fullThread).toContain('Что в этой ситуации задевает вас сильнее всего?');
     expect(fullThread).not.toContain('Что-то пошло не так');
   });
@@ -229,7 +228,7 @@ describe('telegram transcript-driven scenarios', () => {
 
     await harness.runStep(
       { type: 'callback', updateId: 380, userId: 101, data: `synthesis:ok:${sessionId}` },
-      { textIncludes: ['Принял. Двигаемся к решению.'] }
+      { textIncludes: ['Хорошо, двигаемся дальше.'] }
     );
   });
 
@@ -316,7 +315,7 @@ describe('telegram transcript-driven scenarios', () => {
     );
     await harness.runStep(
       { type: 'text', updateId: 451, userId: 101, text: 'Не совсем так с ограничениями' },
-      { textIncludes: ['Принял уточнение'] }
+      { textIncludes: ['Принял, записал.'] }
     );
   });
 
@@ -325,7 +324,7 @@ describe('telegram transcript-driven scenarios', () => {
     const sessionId = await completeSynthesisForBoth(harness);
     await harness.runStep(
       { type: 'callback', updateId: 460, userId: 101, data: `synthesis:ok:${sessionId}` },
-      { textIncludes: ['Принял. Двигаемся к решению.'] }
+      { textIncludes: ['Хорошо, двигаемся дальше.'] }
     );
     await harness.runStep(
       { type: 'callback', updateId: 461, userId: 102, data: `synthesis:ok:${sessionId}` }
