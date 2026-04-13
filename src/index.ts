@@ -26,6 +26,7 @@ import { PrismaSessionEvaluationRepository } from './infrastructure/repositories
 import { PrismaConversationStateRepository } from './infrastructure/repositories/PrismaConversationStateRepository.js';
 import { buildTelegramBot } from './infrastructure/telegram/bot.js';
 import { LlmIntakeNormalizer } from './infrastructure/llm/LlmIntakeNormalizer.js';
+import { LlmIntakeDialogManager } from './infrastructure/llm/LlmIntakeDialogManager.js';
 
 const bootstrap = async () => {
   const env = loadEnv();
@@ -114,7 +115,8 @@ const bootstrap = async () => {
         logger,
         rate_limiter: rateLimiter,
         render_safe_mode: env.RENDER_SAFE_MODE,
-        conversation_state_repository: conversationStateRepository
+        conversation_state_repository: conversationStateRepository,
+        intake_dialog_manager: new LlmIntakeDialogManager()
       });
       await bot.start();
       logger.info('Telegram bot started');

@@ -3,7 +3,6 @@ import { SessionStates, ParticipantRoles } from '../../../domain/session/types.j
 import { DomainError } from '../../../domain/session/errors.js';
 import { mapTelegramErrorText } from '../../transport/errorMapping.js';
 import { makeCorrelationId, makeKey, userIdFromCtx } from '../helpers.js';
-import { mediationIntakeSteps, mediationStepById, MediationIntakeStepId } from '../constants.js';
 import {
   consentKeyboard,
   statusOnlyKeyboard,
@@ -141,13 +140,6 @@ export const resumeActiveScenario = async (
     }
   };
 
-  const stepProgressLine = (stepId: string | null): string | null => {
-    if (!stepId) return null;
-    const idx = mediationIntakeSteps.findIndex((s) => s.id === stepId);
-    if (idx === -1) return null;
-    return `Вопрос ${idx + 1} из ${mediationIntakeSteps.length}`;
-  };
-
   const persistentIntake = await (async () => {
     const state = await findActiveIntakeState(telegramUserId, deps);
     if (!state) return null;
@@ -157,15 +149,10 @@ export const resumeActiveScenario = async (
   })();
   if (persistentIntake) {
     const topic = await tryGetSessionTopic(persistentIntake.sessionId);
-    const progress = stepProgressLine(persistentIntake.currentQuestionKey);
-    const contextPrefix = [topic ? `Тема: «${topic}»` : null, progress]
-      .filter(Boolean)
-      .join(' · ');
-    // Always resume by asking the actual next question based on real intake progress.
-    // (Ignore stale CONFIRM state from old code — no longer used.)
+    const resumeText = topic ? `Продолжаем — тема «${topic}».` : 'Продолжаем с того места, где остановились.';
     await sendReplyWithRetry(
       ctx,
-      contextPrefix ? `Продолжаем. ${contextPrefix}.` : 'Продолжаем с текущего вопроса.',
+      resumeText,
       {
         correlation_id: makeCorrelationId(ctx),
         action_type: 'start_resume'
@@ -180,14 +167,10 @@ export const resumeActiveScenario = async (
   const pendingSessionId = deps.pendingMediationIntakeSession.get(telegramUserId);
   if (pendingSessionId) {
     const topic = await tryGetSessionTopic(pendingSessionId);
-    const currentStepId = deps.pendingMediationIntakeStep.get(telegramUserId) ?? null;
-    const progress = stepProgressLine(currentStepId);
-    const contextPrefix = [topic ? `Тема: «${topic}»` : null, progress]
-      .filter(Boolean)
-      .join(' · ');
+    const resumeText = topic ? `Продолжаем — тема «${topic}».` : 'Продолжаем с того места, где остановились.';
     await sendReplyWithRetry(
       ctx,
-      contextPrefix ? `Продолжаем. ${contextPrefix}.` : 'Продолжаем с текущего вопроса.',
+      resumeText,
       {
         correlation_id: makeCorrelationId(ctx),
         action_type: 'start_resume'
@@ -202,10 +185,7 @@ export const resumeActiveScenario = async (
   const intakeDraft = deps.pendingMediationIntakeDraft.get(telegramUserId);
   if (intakeDraft) {
     const topic = await tryGetSessionTopic(intakeDraft.sessionId);
-    const progress = stepProgressLine(intakeDraft.stepId);
-    const contextPrefix = [topic ? `Тема: «${topic}»` : null, progress]
-      .filter(Boolean)
-      .join(' · ');
+    const contextPrefix = topic ? `Тема: «${topic}»` : null;
     const headerLine = contextPrefix
       ? `Продолжаем. ${contextPrefix}.`
       : 'Вы уже на этом шаге. Подтвердите или поправьте формулировку.';
@@ -532,7 +512,7 @@ export const giveConsentFlow = async (
     deps.lastSessionByUser.set(telegramUserId, sessionId);
     const feedback =
       result.state === SessionStates.CONSENTED
-        ? ['Готово. Вы оба подтвердили участие.', 'Дальше: ответьте на несколько коротких вопросов отдельно.'].join('\n')
+        ? ['Готово. Вы оба подтвердили участие.', 'Дальше каждый расскажет о ситуации отдельно — своими словами.'].join('\n')
         : ['Вы подтвердили участие.', 'Ждём второго человека.'].join('\n');
 
     await sendReplyWithRetry(
