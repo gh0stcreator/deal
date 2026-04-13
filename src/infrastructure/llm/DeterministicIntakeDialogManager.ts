@@ -31,7 +31,7 @@ export class DeterministicIntakeDialogManager implements IntakeDialogManager {
     if (!currentField) {
       // All fields collected — should not normally happen but handle gracefully
       return {
-        reply: 'Я фиксирую ваш смысл.',
+        reply: 'Услышал. Этого достаточно для следующего шага.',
         extractedFields: {},
         isComplete: true
       };
@@ -54,9 +54,9 @@ export class DeterministicIntakeDialogManager implements IntakeDialogManager {
 
     let reply: string;
     if (nextQuestion) {
-      reply = `Я фиксирую ваш смысл.\n\n${nextQuestion}`;
+      reply = nextQuestion;
     } else {
-      reply = 'Я фиксирую ваш смысл.';
+      reply = 'Услышал.';
     }
 
     const isComplete = currentField === 'acceptable_concessions';

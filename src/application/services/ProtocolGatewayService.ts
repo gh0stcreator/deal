@@ -462,7 +462,7 @@ export class ProtocolGatewayService {
     });
 
     return {
-      reflection: preview.reflection?.trim() || 'Слышу вас. Я правильно понял суть?',
+      reflection: preview.reflection?.trim() || 'Правильно понял?',
       extracted_value: preview.extractedValue?.trim() ?? '',
       needs_clarification: preview.needsClarification
     };

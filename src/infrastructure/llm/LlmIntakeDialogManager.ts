@@ -62,7 +62,7 @@ export class LlmIntakeDialogManager implements IntakeDialogManager {
     try { parsed = JSON.parse(jsonText); } catch { throw new Error('LlmIntakeDialogManager: JSON parse failed.'); }
 
     const obj = parsed as Record<string, unknown>;
-    const reply = safeText(obj.reply) || 'Продолжайте, я слушаю.';
+    const reply = safeText(obj.reply) || 'Расскажите подробнее.';
     const complete = Boolean(obj.complete);
 
     const extracted = (obj.extracted ?? {}) as Record<string, unknown>;

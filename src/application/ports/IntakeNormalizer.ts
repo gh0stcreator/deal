@@ -31,7 +31,7 @@ export class DeterministicIntakeNormalizer implements IntakeNormalizer {
     return {
       reflection:
         extracted.length > 0
-          ? 'Я фиксирую ваш смысл и переведу его в рабочую формулировку для следующего шага.'
+          ? 'Принял.'
           : 'Нужно немного уточнить формулировку, чтобы можно было двигаться дальше.',
       extractedValue: extracted,
       needsClarification: extracted.length === 0

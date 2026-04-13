@@ -88,7 +88,7 @@ export class LlmIntakeNormalizer implements IntakeNormalizer {
 
     return {
       reflection:
-        reflection || 'Слышу вас. Я правильно понял суть?',
+        reflection || 'Правильно понял?',
       extractedValue,
       needsClarification: needsClarification || extractedValue.length === 0
     };

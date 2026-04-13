@@ -12,7 +12,7 @@ export class AnthropicClient {
 
   async ask(systemPrompt: string, userMessage: string): Promise<string> {
     const response = await this.client.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-4-5',
       max_tokens: 1000,
       system: systemPrompt,
       messages: [{ role: 'user', content: userMessage }]

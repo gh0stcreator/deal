@@ -211,7 +211,7 @@ export class IntakeService {
       }
     );
     return {
-      reflection: normalization.reflection?.trim() || 'Слышу вас. Я правильно понял суть?',
+      reflection: normalization.reflection?.trim() || 'Правильно понял?',
       extractedValue: normalization.extractedValue?.trim() ?? '',
       needsClarification: normalization.needsClarification
     };
