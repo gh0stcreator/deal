@@ -1812,11 +1812,14 @@ export class ProtocolGatewayService {
 
       return response;
     } catch (error) {
+      const isDomain = error instanceof DomainError;
       this.logger.warn(
         {
           correlation_id: ctx.correlation_id,
           action_type: ctx.action_type,
-          code: error instanceof DomainError ? error.code : 'INTERNAL_ERROR'
+          code: isDomain ? error.code : 'INTERNAL_ERROR',
+          error_message: error instanceof Error ? error.message : String(error),
+          error_stack: !isDomain && error instanceof Error ? error.stack : undefined
         },
         'protocol.action.rejected'
       );
