@@ -169,6 +169,102 @@ export const registerMenuCallbacks = (bot: Bot, deps: BotDeps): void => {
     }
   });
 
+  bot.callbackQuery('menu:remind', async (ctx) => {
+    await safeAnswerCallback(ctx);
+    const telegramUserId = userIdFromCtx(ctx);
+    const correlationId = makeCorrelationId(ctx);
+
+    try {
+      const sessions = await deps.gateway.getUserSessions(telegramUserId);
+      const TERMINAL = new Set(['AGREEMENT', 'PARTIAL_AGREEMENT', 'DEADLOCK', 'ABANDONED']);
+      const active = sessions.filter((s) => !TERMINAL.has(s.state));
+
+      if (active.length === 0) {
+        await sendReplyWithRetry(
+          ctx,
+          'Нет активных договорённостей — некому напоминать.',
+          { correlation_id: correlationId, action_type: 'remind' },
+          { reply_markup: new InlineKeyboard().text('Создать новую', 'menu:create') },
+          deps
+        );
+        return;
+      }
+
+      let sentCount = 0;
+      let notJoinedCount = 0;
+
+      for (const s of active) {
+        const session = await deps.gateway.getSessionStatus(s.id, telegramUserId);
+        const other = session.participants.find((p) => p.telegramUserId !== telegramUserId);
+
+        if (!other) {
+          notJoinedCount += 1;
+          continue;
+        }
+
+        const topic = s.topic ? `«${truncateTopicLabel(s.topic, 40)}»` : '';
+        const topicPart = topic ? ` по теме ${topic}` : '';
+
+        let reminderText: string;
+        switch (s.state) {
+          case 'BOTH_JOINED':
+          case 'CONSENT_PENDING':
+            reminderText = `Ваш собеседник ждёт вас${topicPart}. Нажмите /start и подтвердите участие.`;
+            break;
+          case 'CONSENTED':
+          case 'SIDE_A_INTAKE':
+          case 'SIDE_B_INTAKE':
+            reminderText = `Ваш собеседник уже рассказал о ситуации${topicPart}. Напишите /start — ваша очередь.`;
+            break;
+          case 'READY_FOR_SYNTHESIS':
+          case 'SYNTHESIS_COMPLETED':
+            reminderText = `Ваш собеседник подтвердил картину ситуации${topicPart}. Напишите /start и ответьте на его.`;
+            break;
+          default:
+            reminderText = `Ваш собеседник ждёт ответа${topicPart}. Напишите /start чтобы продолжить.`;
+        }
+
+        await deps.bot.api.sendMessage(parseInt(other.telegramUserId, 10), reminderText);
+        sentCount += 1;
+      }
+
+      if (sentCount > 0 && notJoinedCount === 0) {
+        await sendReplyWithRetry(
+          ctx,
+          sentCount === 1
+            ? 'Напоминание отправлено собеседнику.'
+            : `Напоминания отправлены (${sentCount}).`,
+          { correlation_id: correlationId, action_type: 'remind' },
+          undefined,
+          deps
+        );
+      } else if (sentCount > 0 && notJoinedCount > 0) {
+        await sendReplyWithRetry(
+          ctx,
+          'Напоминание отправлено тем, кто уже присоединился. Остальные ещё не открыли ссылку-приглашение.',
+          { correlation_id: correlationId, action_type: 'remind' },
+          undefined,
+          deps
+        );
+      } else {
+        // all sessions are in INVITED state — second party hasn't joined yet
+        const lastInvite = deps.lastInviteByUser.get(telegramUserId);
+        const linkPart = lastInvite?.deepLink ?? lastInvite?.token ?? null;
+        await sendReplyWithRetry(
+          ctx,
+          linkPart
+            ? `Второй участник ещё не открыл приглашение. Отправьте ссылку ещё раз:\n${linkPart}`
+            : 'Второй участник ещё не присоединился. Отправьте ему ссылку-приглашение.',
+          { correlation_id: correlationId, action_type: 'remind' },
+          undefined,
+          deps
+        );
+      }
+    } catch (error) {
+      await replyWithMappedError(ctx, error, 'remind', 'menu:remind', deps);
+    }
+  });
+
   bot.callbackQuery('menu:new', async (ctx) => {
     await safeAnswerCallback(ctx);
     const telegramUserId = userIdFromCtx(ctx);

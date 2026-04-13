@@ -3,11 +3,11 @@ import { MediationIntakeStepId } from './constants.js';
 
 export const startKeyboard = () =>
   new InlineKeyboard()
-    .text('Создать договорённость', 'menu:create')
+    .text('Мои договорённости', 'menu:my-sessions')
     .row()
-    .text('Присоединиться по приглашению', 'menu:join')
+    .text('Создать новую', 'menu:create')
     .row()
-    .text('Мои договорённости', 'menu:my-sessions');
+    .text('Напомнить собеседнику', 'menu:remind');
 
 export const consentKeyboard = (sessionId: string) =>
   new InlineKeyboard()
