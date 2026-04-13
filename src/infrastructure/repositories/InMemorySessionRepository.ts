@@ -22,4 +22,15 @@ export class InMemorySessionRepository implements SessionRepository {
 
     return null;
   }
+
+  async findByParticipantTelegramUserId(telegramUserId: string, limit: number): Promise<MediationSession[]> {
+    const result: MediationSession[] = [];
+    for (const session of this.sessions.values()) {
+      if (session.participants.some((p) => p.telegramUserId === telegramUserId)) {
+        result.push(structuredClone(session));
+      }
+    }
+    result.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+    return result.slice(0, limit);
+  }
 }

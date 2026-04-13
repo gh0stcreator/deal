@@ -1680,6 +1680,13 @@ export class ProtocolGatewayService {
     return this.requireParticipant(sessionId, telegramUserId);
   }
 
+  async getUserSessions(
+    telegramUserId: string
+  ): Promise<Array<{ id: string; topic: string | null; state: string }>> {
+    const sessions = await this.sessionRepository.findByParticipantTelegramUserId(telegramUserId, 5);
+    return sessions.map((s) => ({ id: s.id, topic: s.problemTopic, state: s.state }));
+  }
+
   async getLatestProposalSet(sessionId: string, telegramUserId: string) {
     await this.requireParticipant(sessionId, telegramUserId);
     return this.proposalSetRepository.findLatestByCaseId(sessionId);

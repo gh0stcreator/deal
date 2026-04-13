@@ -103,4 +103,18 @@ export class PrismaSessionRepository implements SessionRepository {
 
     return session ? mapSession(session as SessionRecord) : null;
   }
+
+  async findByParticipantTelegramUserId(telegramUserId: string, limit: number): Promise<MediationSession[]> {
+    const sessions = await this.prisma.mediationSession.findMany({
+      where: {
+        participants: {
+          some: { telegramUserId }
+        }
+      },
+      include: { participants: true },
+      orderBy: { updatedAt: 'desc' },
+      take: limit
+    });
+    return sessions.map((s) => mapSession(s as SessionRecord));
+  }
 }

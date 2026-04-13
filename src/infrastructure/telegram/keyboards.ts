@@ -7,7 +7,7 @@ export const startKeyboard = () =>
     .row()
     .text('Присоединиться по приглашению', 'menu:join')
     .row()
-    .text('Посмотреть статус', 'menu:status');
+    .text('Мои договорённости', 'menu:my-sessions');
 
 export const consentKeyboard = (sessionId: string) =>
   new InlineKeyboard()
@@ -36,7 +36,8 @@ export const buildResumeKeyboard = (
       kb.text(label, `menu:resume:${id}`).row();
     }
   }
-  kb.text('Начать новую', 'menu:new');
+  kb.text('Начать новую', 'menu:new').row();
+  kb.text('Мои договорённости', 'menu:my-sessions');
   return kb;
 };
 
